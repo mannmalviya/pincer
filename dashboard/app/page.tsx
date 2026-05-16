@@ -65,14 +65,13 @@ export default function Landing() {
       {/* How it works */}
       <section className="border-t border-foreground/10 px-6 py-20">
         <div className="max-w-5xl mx-auto">
-          <h2 className="font-sans text-sm uppercase tracking-wider text-foreground/50 text-center mb-12">
+          <h2 className="font-serif text-3xl sm:text-4xl tracking-tight text-center mb-12">
             How it works
           </h2>
 
-          {/* Beam diagram: every supported platform flows into the
-              Pincer mark at the center. Sits above the textual steps as
-              a one-glance summary of "we pull from everywhere, route
-              into one inbox". */}
+          {/* Simple beam diagram. Solid wires with a slow opacity
+              pulse, no traveling dashes or stacked drop-shadow filters,
+              so the section stays smooth. */}
           <PlatformBeams />
 
           <ol className="grid gap-8 sm:grid-cols-3 mt-16">

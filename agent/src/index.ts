@@ -9,6 +9,13 @@
 // SIGINT on `pm2 stop`; Brev's launchable lifecycle uses SIGTERM. Both
 // land in the same shutdown path.
 
+// Load .env BEFORE any other import that reads process.env. config.ts
+// evaluates its module-level `process.env.X` accesses at import time, so
+// dotenv has to run first or those reads see undefined. A missing .env
+// is not an error — process.env still applies, so a fully PM2- or
+// systemd-driven deploy keeps working.
+import "dotenv/config";
+
 import { HOST, PORT } from "./config.js";
 import { closeDb, getDb } from "./db.js";
 import { log } from "./lib/log.js";

@@ -22,13 +22,9 @@ REPO_DIR="${PINCER_REPO_DIR:-$HOME/pincer}"
 BRANCH="${PINCER_BRANCH:-main}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 
-# Env baked into the PM2 process. Override before invoking setup if you want
-# different ports, intervals, or a custom User-Agent.
-PORT="${PORT:-8000}"
-HOST="${HOST:-0.0.0.0}"          # 0.0.0.0 so Brev's port routing can reach us
-WATCH_INTERVAL_MS="${WATCH_INTERVAL_MS:-60000}"
-USER_AGENT="${USER_AGENT:-pincer-agent/0.1 (+https://github.com/mannmalviya/pincer)}"
-DB_PATH="${DB_PATH:-$HOME/.pincer/agent.sqlite}"
+# DB dir, needed unconditionally for the `mkdir -p` below. Real DB_PATH
+# is read at runtime by the agent from .env (or process.env if not set).
+DB_PATH_DEFAULT="$HOME/.pincer/agent.sqlite"
 
 # --- helpers -----------------------------------------------------------------
 log() { printf "\n\033[1;36m[setup]\033[0m %s\n" "$*"; }
@@ -63,10 +59,22 @@ npm install
 log "compiling TypeScript"
 npm run build
 
-# --- 5. Ensure the DB directory exists --------------------------------------
+# --- 5. Seed .env from .env.example if the user hasn't created one ----------
+# The agent loads its config from this file at startup via dotenv. On first
+# run we copy the example so the user has something to edit; we never
+# overwrite an existing .env (would clobber a real NIM_API_KEY).
+if [[ ! -f "$REPO_DIR/agent/.env" && -f "$REPO_DIR/agent/.env.example" ]]; then
+  log "creating agent/.env from .env.example (edit it to set NIM_API_KEY)"
+  cp "$REPO_DIR/agent/.env.example" "$REPO_DIR/agent/.env"
+fi
+
+# --- 6. Ensure the DB directory exists --------------------------------------
+# Honour DB_PATH from the .env if present; fall back to the default.
+DB_PATH="$(grep -E '^DB_PATH=' "$REPO_DIR/agent/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' || true)"
+DB_PATH="${DB_PATH:-$DB_PATH_DEFAULT}"
 mkdir -p "$(dirname "$DB_PATH")"
 
-# --- 6. PM2 install + start -------------------------------------------------
+# --- 7. PM2 install + start -------------------------------------------------
 if ! command -v pm2 >/dev/null 2>&1; then
   log "installing PM2 globally"
   sudo npm install -g pm2
@@ -74,12 +82,14 @@ fi
 
 log "(re)starting pincer-agent under PM2"
 pm2 delete pincer-agent 2>/dev/null || true
-PORT="$PORT" HOST="$HOST" WATCH_INTERVAL_MS="$WATCH_INTERVAL_MS" \
-  USER_AGENT="$USER_AGENT" DB_PATH="$DB_PATH" \
-  pm2 start "$REPO_DIR/agent/dist/index.js" --name pincer-agent \
-    --time --output "$HOME/pincer-agent.out.log" --error "$HOME/pincer-agent.err.log"
+# No env vars on this line. The agent's dotenv import reads .env at boot,
+# and PM2 inherits the working directory ($REPO_DIR/agent) via --cwd so
+# dotenv's default lookup ("./.env") finds it.
+pm2 start "$REPO_DIR/agent/dist/index.js" --name pincer-agent \
+  --cwd "$REPO_DIR/agent" \
+  --time --output "$HOME/pincer-agent.out.log" --error "$HOME/pincer-agent.err.log"
 
-# --- 7. Persist PM2 across reboots ------------------------------------------
+# --- 8. Persist PM2 across reboots ------------------------------------------
 # `pm2 startup` prints a sudo command on stdout that registers a systemd
 # service for the current user. We execute it ourselves so the whole script
 # is hands-off. If you'd rather inspect the command first, comment out the
@@ -91,13 +101,18 @@ if [[ "$PM2_STARTUP_CMD" == sudo* ]]; then
 fi
 pm2 save
 
-# --- 8. Smoke test ----------------------------------------------------------
-log "verifying /health responds"
+# --- 9. Smoke test ----------------------------------------------------------
+# Health check uses 8000 unless the user overrode it in .env. Mirror the
+# same precedence the agent uses: .env wins, default 8000 as fallback.
+PORT="$(grep -E '^PORT=' "$REPO_DIR/agent/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' || true)"
+PORT="${PORT:-8000}"
+log "verifying /health responds on :${PORT}"
 sleep 2
 if curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null; then
   log "agent is live on :${PORT}"
   echo
   echo "  Public URL: whatever Brev exposes port ${PORT} as."
+  echo "  Edit config: vi $REPO_DIR/agent/.env (then pm2 restart pincer-agent)"
   echo "  Logs:        pm2 logs pincer-agent"
   echo "  Restart:     pm2 restart pincer-agent"
   echo "  Stop:        pm2 stop pincer-agent"

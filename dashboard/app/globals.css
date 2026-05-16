@@ -265,20 +265,43 @@
   }
 }
 
-/* PlatformBeams traveling-dash animation. Each beam path uses
-   pathLength=100 so dasharray/dashoffset are in normalized units; the
-   short dash starts off-path at +100 and travels to a negative offset
-   over the loop, sliding the bright pulse from one end to the other.
-   Stagger comes from animation-delay set per beam. */
+/* PlatformBeams data-stream animation. The wire is dashed (set via
+   strokeDasharray on the path), and we slide that dash pattern along
+   the path so the dashes flow like packets. One dash cycle = 6 units
+   to match the "3 3" pattern used on the path; animating exactly one
+   cycle per loop keeps the stream seamless. Cheap: dashoffset doesn't
+   trigger layout, just paint. */
 @keyframes beam-pulse {
   from {
-    stroke-dashoffset: 100;
+    stroke-dashoffset: 0;
   }
   to {
-    stroke-dashoffset: -8;
+    stroke-dashoffset: -6;
   }
 }
 
 .beam-anim {
-  animation: beam-pulse 2.4s linear infinite;
+  animation: beam-pulse 1.6s linear infinite;
+}
+
+/* CommentsBackdrop column scrollers. Each column's content is
+   duplicated twice so a translateY of -50% wraps seamlessly back to
+   the original frame. Two directions so adjacent columns drift in
+   opposite ways for a parallax feel. */
+@keyframes comments-scroll-up {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-50%);
+  }
+}
+
+@keyframes comments-scroll-down {
+  from {
+    transform: translateY(-50%);
+  }
+  to {
+    transform: translateY(0);
+  }
 }

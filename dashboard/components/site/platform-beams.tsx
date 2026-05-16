@@ -14,7 +14,7 @@ import { PincerMark } from "./pincer-mark";
 // Each platform node sits at (x, y) as a percentage of the diagram box.
 // The SVG wire layer uses the same percentages via viewBox="0 0 100 100"
 // so the two stay aligned at any container size. `delay` staggers the
-// pulses so the beams don't fire in unison.
+// dash streams so the wires don't march in lockstep.
 type PlatformNode = {
   id: string;
   icon: ComponentType<{ className?: string; style?: CSSProperties }>;
@@ -24,63 +24,111 @@ type PlatformNode = {
 };
 
 // The five sources stacked along the left edge. They feed into Pincer.
-const LEFT_X = 10;
+const LEFT_X = 8;
 const PLATFORMS: PlatformNode[] = [
-  { id: "reddit",  icon: FaReddit,     color: "#FF4500",     y: 8,  delay: "0s"   },
-  { id: "hn",      icon: FaHackerNews, color: "#FF6600",     y: 29, delay: "0.3s" },
-  { id: "discord", icon: FaDiscord,    color: "#5865F2",     y: 50, delay: "0.6s" },
-  { id: "bluesky", icon: FaBluesky,    color: "#0085FF",     y: 71, delay: "0.9s" },
-  { id: "github",  icon: FaGithub,     color: "currentColor",y: 92, delay: "1.2s" },
+  { id: "reddit",  icon: FaReddit,     color: "#FF4500",      y: 8,  delay: "0s"   },
+  { id: "hn",      icon: FaHackerNews, color: "#FF6600",      y: 29, delay: "0.3s" },
+  { id: "discord", icon: FaDiscord,    color: "#5865F2",      y: 50, delay: "0.6s" },
+  { id: "bluesky", icon: FaBluesky,    color: "#0085FF",      y: 71, delay: "0.9s" },
+  { id: "github",  icon: FaGithub,     color: "currentColor", y: 92, delay: "1.2s" },
 ];
 
-// Right-side stack: Pincer → Nemotron. Single hand-off representing the
-// LLM Pincer rides on. Positioned so the bubble sits comfortably between
-// the central hub and the right edge.
-type StackNode = { id: string; label: string; x: number; y: number; delay: string };
-const STACK: StackNode[] = [
-  { id: "nemotron", label: "Nemotron", x: 80, y: 50, delay: "0.6s" },
+// Pincer hub, sits left of geometric center to make room on the right
+// for the Nemotron Models box.
+const CENTER = { x: 38, y: 50 };
+
+// Right-side box that frames the LLM agents. The Pincer wire enters
+// this box at the Orchestrator on the left edge; the Orchestrator
+// then fans out to the three specialized agents on the right.
+const BOX = { left: 50, top: 14, right: 98, bottom: 86 };
+
+// Orchestrator sits just inside the box's left edge so the incoming
+// wire from Pincer visibly crosses the box border.
+const ORCHESTRATOR = { id: "orch", label: "Orchestrator", x: 58, y: 50, delay: "0.4s" };
+
+// The three downstream specialists, stacked vertically against the
+// right side of the box. Each receives a short internal wire from
+// the orchestrator.
+type AgentNode = { id: string; label: string; x: number; y: number; delay: string };
+const AGENTS: AgentNode[] = [
+  { id: "drafter",    label: "Drafter",    x: 87, y: 27, delay: "0.7s" },
+  { id: "classifier", label: "Classifier", x: 87, y: 50, delay: "0.9s" },
+  { id: "replier",    label: "Replier",    x: 87, y: 73, delay: "1.1s" },
 ];
 
-const CENTER = { x: 50, y: 50 };
-
-// Single beam color shared by every wire, so the diagram reads as a
-// uniform "data is flowing" current rather than six separate streams.
-// sky-400; bright enough to glow on the warm background and not clash
-// with any platform brand color.
+// Single beam color shared by every wire so the whole diagram reads
+// as one connected data flow.
 const BEAM_COLOR = "#0369a1";
 
 export function PlatformBeams() {
   return (
-    <div className="relative w-full max-w-2xl mx-auto aspect-square">
-      {/* Wires + traveling pulses. Quadratic Bezier with the control
-          point pulled toward the node's y gives a gentle horizontal bow
-          into the center, more interesting than a straight line. */}
+    <div className="relative w-full max-w-4xl mx-auto aspect-[3/2]">
+      {/* z-0: Nemotron Models box. Sits below the wires so the
+          orchestrator-to-agent wires render visibly inside it. */}
+      <div
+        className="absolute rounded-2xl border border-foreground/15 bg-foreground/[0.02]"
+        style={{
+          left: `${BOX.left}%`,
+          top: `${BOX.top}%`,
+          width: `${BOX.right - BOX.left}%`,
+          height: `${BOX.bottom - BOX.top}%`,
+        }}
+        aria-hidden
+      />
+
+      {/* Box label, fieldset-legend style: sits on the top border of
+          the box with a bg-background backplate so the border visually
+          breaks behind it. */}
+      <div
+        className="absolute -translate-x-1/2 -translate-y-1/2 px-3 bg-background"
+        style={{
+          left: `${(BOX.left + BOX.right) / 2}%`,
+          top: `${BOX.top}%`,
+        }}
+      >
+        <span className="font-sans text-xs uppercase tracking-[0.2em] text-foreground/55 whitespace-nowrap">
+          Nemotron Models
+        </span>
+      </div>
+
+      {/* z-10: all wires. SVG covers the whole diagram so wire
+          coordinates and HTML element percentages share the same
+          coordinate system. */}
       <svg
         className="absolute inset-0 w-full h-full overflow-visible"
         viewBox="0 0 100 100"
         preserveAspectRatio="none"
         aria-hidden
       >
-        {/* Left-side beams: platforms → Pincer. */}
+        {/* Platforms to Pincer. Each curve bows gently into the hub. */}
         {PLATFORMS.map((n) => {
           const cx = (LEFT_X + CENTER.x) / 2;
           const d = `M ${LEFT_X} ${n.y} Q ${cx} ${n.y} ${CENTER.x} ${CENTER.y}`;
           return <Beam key={n.id} d={d} delay={n.delay} />;
         })}
 
-        {/* Right-side beams: Pincer to the LLM stack. Same pulsing
-            wire treatment as the left, no per-direction motion. */}
-        {STACK.map((n, i) => {
-          const prev = i === 0 ? CENTER : STACK[i - 1];
-          const cx = (prev.x + n.x) / 2;
-          const d = `M ${prev.x} ${prev.y} Q ${cx} ${n.y} ${n.x} ${n.y}`;
-          return <Beam key={n.id} d={d} delay={n.delay} />;
-        })}
+        {/* Pincer to Orchestrator. Short horizontal wire that crosses
+            the box's left border, reading as data entering the model
+            cluster. */}
+        <Beam
+          d={`M ${CENTER.x} ${CENTER.y} L ${ORCHESTRATOR.x} ${ORCHESTRATOR.y}`}
+          delay={ORCHESTRATOR.delay}
+        />
+
+        {/* Orchestrator to each specialist. Straight diagonals so the
+            internal fan-out is immediately readable as one source to
+            many. */}
+        {AGENTS.map((a) => (
+          <Beam
+            key={a.id}
+            d={`M ${ORCHESTRATOR.x} ${ORCHESTRATOR.y} L ${a.x} ${a.y}`}
+            delay={a.delay}
+          />
+        ))}
       </svg>
 
-      {/* Platform icons, positioned at the same percentages as the SVG
-          coords. Rounded chip with bg-background so the icon punches
-          through the beam trails cleanly. */}
+      {/* z-20: platform icons. Rounded chip with bg-background so the
+          icon punches through the wire underneath it cleanly. */}
       {PLATFORMS.map((n) => {
         const Icon = n.icon;
         return (
@@ -94,30 +142,22 @@ export function PlatformBeams() {
         );
       })}
 
-      {/* Right-side infrastructure bubbles, positioned at each node's
-          own (x, y). Same blue accent as the beams so the whole chain
-          reads as part of the data-flow rather than separate chips. */}
-      {STACK.map((n) => (
-        <div
-          key={n.id}
-          className="absolute -translate-x-1/2 -translate-y-1/2 px-3 py-1.5 rounded-full bg-background border border-[color:var(--beam-border)] flex items-center justify-center shadow-sm"
-          style={
-            {
-              left: `${n.x}%`,
-              top: `${n.y}%`,
-              ["--beam-border" as string]: `${BEAM_COLOR}66`,
-            } as CSSProperties
-          }
-        >
-          <span className="font-mono text-xs tracking-tight text-foreground/80 whitespace-nowrap">
-            {n.label}
-          </span>
-        </div>
+      {/* Orchestrator bubble. Slightly emphasized (brand-tinted border
+          and font-medium label) since it's the entry point into the
+          model cluster. */}
+      <AgentChip
+        x={ORCHESTRATOR.x}
+        y={ORCHESTRATOR.y}
+        label={ORCHESTRATOR.label}
+        emphasis
+      />
+
+      {/* The three specialist agents on the right side of the box. */}
+      {AGENTS.map((a) => (
+        <AgentChip key={a.id} x={a.x} y={a.y} label={a.label} />
       ))}
 
-      {/* The Pincer mark, the hub all beams flow through. Slightly
-          larger than the side chips with a soft brand glow so it reads
-          as the focal point. */}
+      {/* The Pincer mark, the hub all platform beams flow through. */}
       <div
         className="absolute -translate-x-1/2 -translate-y-1/2"
         style={{ left: `${CENTER.x}%`, top: `${CENTER.y}%` }}
@@ -128,46 +168,67 @@ export function PlatformBeams() {
   );
 }
 
-// Single beam: a thick glowing always-on wire with a bright pulse
-// traveling along it. The wire stays lit so the channel is always
-// visible; the bright dash overlay reads as a packet of data moving
-// through. Per-call delay staggers the pulses across the diagram.
+// Reusable pill for the agents inside the Nemotron Models box.
+// `emphasis` switches the border to the beam color so the Orchestrator
+// stands out as the entry point.
+function AgentChip({
+  x,
+  y,
+  label,
+  emphasis = false,
+}: {
+  x: number;
+  y: number;
+  label: string;
+  emphasis?: boolean;
+}) {
+  return (
+    <div
+      className={
+        "absolute -translate-x-1/2 -translate-y-1/2 px-3 py-1.5 rounded-full bg-background flex items-center justify-center shadow-sm border " +
+        (emphasis ? "border-[color:var(--beam-border)]" : "border-foreground/15")
+      }
+      style={
+        {
+          left: `${x}%`,
+          top: `${y}%`,
+          ["--beam-border" as string]: `${BEAM_COLOR}99`,
+        } as CSSProperties
+      }
+    >
+      <span
+        className={
+          "font-mono text-xs tracking-tight whitespace-nowrap " +
+          (emphasis ? "text-foreground font-medium" : "text-foreground/80")
+        }
+      >
+        {label}
+      </span>
+    </div>
+  );
+}
+
+// Single beam: a dashed wire whose dash pattern slides along the path
+// so it reads as packets streaming through. Dash sizes are in raw
+// viewBox units (no pathLength normalization, no non-scaling-stroke)
+// because those features render dashes inconsistently across straight
+// vs curved Bezier paths in some browsers. Result: identical dash
+// rhythm on every wire. Per-call delay staggers the streams across
+// the diagram so they don't march in lockstep.
 function Beam({ d, delay }: { d: string; delay: string }) {
   return (
-    <g>
-      {/* Always-on wire. Thick, fully opaque, layered drop-shadows for
-          a true "neon pipe" halo around the line. */}
-      <path
-        d={d}
-        pathLength={100}
-        fill="none"
-        stroke={BEAM_COLOR}
-        strokeOpacity={1}
-        strokeWidth={4}
-        strokeLinecap="round"
-        vectorEffect="non-scaling-stroke"
-        style={{
-          filter: `drop-shadow(0 0 6px ${BEAM_COLOR}) drop-shadow(0 0 14px ${BEAM_COLOR}) drop-shadow(0 0 22px ${BEAM_COLOR})`,
-        }}
-      />
-      {/* Traveling pulse. Wider than the wire, near-white core with a
-          colored halo, so the packet visibly outshines the channel. */}
-      <path
-        className="beam-anim"
-        d={d}
-        pathLength={100}
-        fill="none"
-        stroke="#f0f9ff"
-        strokeWidth={5.5}
-        strokeLinecap="round"
-        strokeDasharray="8 100"
-        vectorEffect="non-scaling-stroke"
-        style={{
-          animationDelay: delay,
-          filter:
-            "drop-shadow(0 0 6px #ffffff) drop-shadow(0 0 14px #38bdf8) drop-shadow(0 0 22px #0ea5e9)",
-        }}
-      />
-    </g>
+    <path
+      className="beam-anim"
+      d={d}
+      fill="none"
+      stroke={BEAM_COLOR}
+      strokeWidth={0.6}
+      strokeLinecap="round"
+      strokeDasharray="3 3"
+      style={{
+        animationDelay: delay,
+        filter: `drop-shadow(0 0 0.8px ${BEAM_COLOR})`,
+      }}
+    />
   );
 }

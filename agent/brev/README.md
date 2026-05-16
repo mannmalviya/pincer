@@ -82,7 +82,25 @@ From your laptop (public check). Brev gives each exposed port a URL like
 curl -s https://your-brev-agent-url/health
 ```
 
-## Step 4: point the dashboard at the Brev agent
+## Step 4: configure the agent's runtime env
+
+The agent reads its config from `agent/.env` at boot via dotenv. `setup.sh`
+creates one for you from `.env.example` on first run.
+
+```bash
+vi ~/pincer/agent/.env       # set NIM_API_KEY, optionally pick models
+pm2 restart pincer-agent     # pick up the changes
+```
+
+Required: `NIM_API_KEY`. Without it, the reply-drafting and onboarding
+analyze routes return 503. Everything else (ports, paths, model IDs)
+has sensible defaults in `.env.example`.
+
+You can still set vars via PM2 (`pm2 set pincer-agent:VAR value`); those
+override anything in `.env` because they reach `process.env` first. Pick
+one source of truth and stick with it; mixing them gets confusing.
+
+## Step 5: point the dashboard at the Brev agent
 
 On your laptop, set an env var the dashboard reads when it talks to the
 agent. Add to `dashboard/.env.local`:
