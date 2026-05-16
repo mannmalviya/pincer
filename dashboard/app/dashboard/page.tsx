@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { BackfillCard } from "./_components/backfill-card";
+import { CommentsFeed } from "./_components/comments-feed";
 import { OverviewStats } from "./_components/overview-stats";
 
 // ---------------------------------------------------------------------------
@@ -39,6 +40,10 @@ export default function DashboardOverview() {
       {/* Top-line metrics. Client component, polls the agent's /stats every
           30s, falls back to dashes when the agent is unreachable. */}
       <OverviewStats />
+
+      {/* Flat feed of every comment the agent has captured across every
+          watched post. Polls /comments on the same 30s cadence as stats. */}
+      <CommentsFeed />
 
       {/* Jump-off cards */}
       <section>

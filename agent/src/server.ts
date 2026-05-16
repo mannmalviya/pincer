@@ -9,6 +9,7 @@ import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
 import { CORS_ORIGIN_REGEX } from "./config.js";
 import { log } from "./lib/log.js";
 import { registerBackfillUserRoute } from "./routes/backfill-user.js";
+import { registerCommentsRoute } from "./routes/comments.js";
 import { registerHealthRoute } from "./routes/health.js";
 import { registerPostsRoutes } from "./routes/posts.js";
 import { registerStatsRoute } from "./routes/stats.js";
@@ -55,6 +56,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   registerPostsRoutes(app);
   registerStatsRoute(app);
   registerBackfillUserRoute(app);
+  registerCommentsRoute(app);
 
   return app;
 }

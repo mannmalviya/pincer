@@ -65,6 +65,39 @@ export type AgentStats = {
   comments_tracked: number;
 };
 
+// One row in the dashboard's flat comments feed. The agent inlines the
+// originating post's platform + title + permalink so the UI doesn't need
+// a follow-up lookup per comment.
+export type AgentComment = {
+  id: number;
+  external_id: string;
+  author: string | null;
+  body: string | null;
+  posted_at: number | null;
+  fetched_at: number;
+  post_id: number;
+  platform: "reddit" | "hn";
+  post_title: string | null;
+  post_permalink: string;
+};
+
+// Returns null on failure (network error or 5xx) so the UI can render a
+// dashed "agent offline" state instead of crashing.
+export async function fetchComments(
+  limit = 50,
+): Promise<AgentComment[] | null> {
+  try {
+    const res = await fetch(`${AGENT_BASE}/comments?limit=${limit}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { comments: AgentComment[] };
+    return data.comments;
+  } catch {
+    return null;
+  }
+}
+
 // Fetch the live counts. Returns null on failure so callers can render a
 // graceful "agent offline" placeholder rather than crashing the page.
 export async function fetchStats(): Promise<AgentStats | null> {
