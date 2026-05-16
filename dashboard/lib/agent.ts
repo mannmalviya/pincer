@@ -283,6 +283,47 @@ export async function patchSettings(
   }
 }
 
+// Wipe every user-data table on the agent. The agent re-validates the
+// confirmation phrase server-side; we send it verbatim so a successful
+// call here means the user typed it correctly in the UI. Returns a
+// discriminated result so the caller can show a helpful error message
+// (e.g. agent offline vs. confirmation rejected).
+export type ResetDbResult =
+  | { ok: true }
+  | { ok: false; code: string; message: string };
+
+export async function resetAgentDb(confirm: string): Promise<ResetDbResult> {
+  try {
+    const res = await fetch(`${AGENT_BASE}/admin/reset-db`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm }),
+    });
+    if (!res.ok) {
+      // Try to surface the agent's error envelope; fall back to the status.
+      let code = "agent_error";
+      let message = `Agent returned ${res.status}`;
+      try {
+        const body = (await res.json()) as {
+          error?: { code?: string; message?: string };
+        };
+        if (body.error?.code) code = body.error.code;
+        if (body.error?.message) message = body.error.message;
+      } catch {
+        // ignore: response wasn't JSON
+      }
+      return { ok: false, code, message };
+    }
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      code: "network_error",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 // Fetch the live counts. Returns null on failure so callers can render a
 // graceful "agent offline" placeholder rather than crashing the page.
 export async function fetchStats(): Promise<AgentStats | null> {

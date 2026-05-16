@@ -1,4 +1,5 @@
 import { BackfillCard } from "../_components/backfill-card";
+import { DangerZoneCard } from "../_components/danger-zone-card";
 import { GithubCard } from "../_components/github-card";
 import { PollSettingsCard } from "../_components/poll-settings-card";
 
@@ -31,6 +32,10 @@ export default function SettingsPage() {
 
       <section>
         <BackfillCard />
+      </section>
+
+      <section>
+        <DangerZoneCard />
       </section>
     </div>
   );
