@@ -54,31 +54,25 @@ type ChatMessage = {
 // Diff representation. Either an unchanged chunk (context) or a hunk
 // the user must decide on. The walk that builds these collapses each
 // consecutive run of added/removed jsdiff parts into one hunk.
+// A hunk lives in the parts list ONLY while it's still pending. The
+// moment the user accepts or rejects it, we replace it with an
+// "unchanged" part carrying either the added or removed text — so the
+// status field would only ever be "pending" and is therefore not stored.
 type DiffPart =
   | { kind: "unchanged"; value: string }
-  | {
-      kind: "hunk";
-      id: string;
-      removed: string;
-      added: string;
-      status: "pending" | "accepted" | "rejected";
-    };
+  | { kind: "hunk"; id: string; removed: string; added: string };
 
 type Proposal = {
-  // The model's full new body. We keep it around so the user can re-
-  // generate hunks (e.g. if they want a re-walk after editing one) or
-  // bail out of the review entirely.
+  // The model's full new body. Kept around so we have something to
+  // compare against if we want to re-derive the diff after edits.
   proposedBody: string;
   parts: DiffPart[];
-  // Optional title change. The model emits new_title in the JSON
-  // response when it wants to rewrite the headline. We treat the
-  // title as one atomic hunk (no per-character diff — titles are
-  // short and a single accept/reject is the right granularity).
+  // Optional title change. Same model: the title hunk is only present
+  // while it's still pending. On decision it's applied and removed.
   titleHunk?: {
     id: string;
     oldTitle: string;
     newTitle: string;
-    status: "pending" | "accepted" | "rejected";
   };
 };
 
@@ -186,6 +180,7 @@ export function PostEditor({
       const data = (await res.json()) as {
         reply?: string;
         newBody?: string;
+        newTitle?: string;
         error?: string;
       };
       if (!res.ok || !data.reply) {
@@ -193,21 +188,37 @@ export function PostEditor({
         return;
       }
 
+      // The model can change the title, the body, both, or neither.
+      // Anything else (a chat-only reply) leaves the post untouched.
+      const bodyChanged =
+        typeof data.newBody === "string" && data.newBody !== body;
+      const titleChanged =
+        typeof data.newTitle === "string" && data.newTitle !== title;
+
       const assistantMessage: ChatMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
         content: data.reply,
-        hadProposal: typeof data.newBody === "string",
+        hadProposal: bodyChanged || titleChanged,
       };
       setMessages((cur) => [...cur, assistantMessage]);
 
-      // If the model proposed an edit, compute the diff hunks and switch
-      // the left column to review mode. We only allow one in-flight
-      // proposal at a time — applying or canceling resets it.
-      if (typeof data.newBody === "string" && data.newBody !== body) {
+      if (bodyChanged || titleChanged) {
         setProposal({
-          proposedBody: data.newBody,
-          parts: buildDiffParts(body, data.newBody),
+          proposedBody: bodyChanged ? data.newBody! : body,
+          // If the body didn't change, the parts list is just one
+          // "unchanged" entry — no body hunks, but the title hunk
+          // below still drives the auto-apply gating.
+          parts: bodyChanged
+            ? buildDiffParts(body, data.newBody!)
+            : [{ kind: "unchanged", value: body }],
+          titleHunk: titleChanged
+            ? {
+                id: crypto.randomUUID(),
+                oldTitle: title,
+                newTitle: data.newTitle!,
+              }
+            : undefined,
         });
       }
     } catch (err) {
@@ -235,47 +246,85 @@ export function PostEditor({
     abortRef.current?.abort();
   }
 
+  // Each hunk decision is independent: clicking ✓ or ✗ on a hunk
+  // applies that one change to the body (or title) RIGHT NOW and
+  // removes it from the diff. The diff only renders the hunks still
+  // awaiting a decision, so the view shrinks one hunk at a time as the
+  // user works through them. When nothing's left pending, the
+  // proposal closes and the user is back in the textarea.
+  //
+  // Implementation: we read the current proposal from the closure
+  // (each click is its own event so the closure is fresh), compute
+  // the next state + the side effects (onBodyChange / onTitleChange),
+  // then call the setters at top level. We can't put onTitleChange /
+  // onBodyChange inside a `setProposal((prev) => ...)` updater because
+  // that callback runs during the render scheduling phase — calling
+  // a parent setState from there triggers React's "setState during
+  // render of another component" error.
   function setHunkStatus(
     hunkId: string,
     status: "accepted" | "rejected",
   ): void {
     if (!proposal) return;
-    setProposal({
-      proposedBody: proposal.proposedBody,
-      parts: proposal.parts.map((p) =>
-        p.kind === "hunk" && p.id === hunkId ? { ...p, status } : p,
-      ),
+
+    // Title hunk: apply or discard, then remove. No parts mutation.
+    if (proposal.titleHunk && proposal.titleHunk.id === hunkId) {
+      if (status === "accepted") {
+        onTitleChange(proposal.titleHunk.newTitle);
+      }
+      const stillPending = proposal.parts.some((p) => p.kind === "hunk");
+      setProposal(stillPending ? { ...proposal, titleHunk: undefined } : null);
+      return;
+    }
+
+    // Body hunk: convert to "unchanged" with whichever side the user
+    // picked. Then derive the new body from the updated parts list
+    // (unchanged values + still-pending hunks' original `removed`
+    // content) and commit it.
+    const newParts: DiffPart[] = proposal.parts.map((p) => {
+      if (p.kind === "hunk" && p.id === hunkId) {
+        return {
+          kind: "unchanged",
+          value: status === "accepted" ? p.added : p.removed,
+        };
+      }
+      return p;
     });
+    const newBody = newParts.reduce((acc, p) => {
+      if (p.kind === "unchanged") return acc + p.value;
+      // Still-pending hunk: keep the original (removed) content so
+      // the body doesn't jump ahead of the user's decisions.
+      return acc + p.removed;
+    }, "");
+    onBodyChange(newBody);
+
+    const stillPendingBody = newParts.some((p) => p.kind === "hunk");
+    const stillPendingTitle = proposal.titleHunk !== undefined;
+    setProposal(
+      !stillPendingBody && !stillPendingTitle
+        ? null
+        : { ...proposal, parts: newParts },
+    );
   }
 
-  // All hunks must be decided (accepted or rejected) before the merged
-  // body can be applied. A proposal with zero hunks (model returned the
-  // same body) couldn't have been created — we guard above — so this
-  // can only be false while at least one hunk is still "pending".
-  const allResolved =
-    proposal !== null &&
-    proposal.parts.every((p) => p.kind !== "hunk" || p.status !== "pending");
-
-  function applyProposal() {
-    if (!proposal || !allResolved) return;
-    const merged = mergeParts(proposal.parts);
-    onBodyChange(merged);
+  // Batched "accept everything that's still pending" used by the
+  // type-to-accept gesture inside the diff view. Doing this as one
+  // call (instead of calling setHunkStatus in a loop) avoids racing
+  // the closure: each setHunkStatus would otherwise read the same
+  // stale `proposal` and overwrite each other's setProposal results.
+  function acceptAllPending(): void {
+    if (!proposal) return;
+    const newParts: DiffPart[] = proposal.parts.map((p) =>
+      p.kind === "hunk" ? { kind: "unchanged", value: p.added } : p,
+    );
+    const newBody = newParts.reduce(
+      (acc, p) => (p.kind === "unchanged" ? acc + p.value : acc),
+      "",
+    );
+    if (newBody !== body) onBodyChange(newBody);
+    if (proposal.titleHunk) onTitleChange(proposal.titleHunk.newTitle);
     setProposal(null);
   }
-
-  // Auto-apply when every hunk has been resolved. The per-hunk ✓/✗
-  // buttons are now the only controls in the diff view — there's no
-  // separate Apply step the user has to remember to press. Rejecting
-  // all hunks doubles as "discard the proposal" since the merged body
-  // is just the original.
-  useEffect(() => {
-    if (proposal && allResolved) {
-      applyProposal();
-    }
-    // applyProposal is stable enough for this — react-hooks/exhaustive-deps
-    // would want it memoized, but inlining it would obscure the intent.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [proposal, allResolved]);
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_320px] gap-6">
@@ -309,22 +358,54 @@ export function PostEditor({
             </button>
           )}
         </div>
-        {proposal ? (
-          <DiffReview
-            parts={proposal.parts}
-            onHunkDecision={setHunkStatus}
-          />
-        ) : previewing ? (
-          <PostPreview body={body} />
-        ) : (
-          <LinedTextarea
-            id="post-body"
-            value={body}
-            onChange={onBodyChange}
-            onSelectionChange={setSelection}
-            placeholder="Write your post here. Markdown works on Reddit and HN."
-          />
-        )}
+        {(() => {
+          // Title input lives in the editor card's header in BOTH the
+          // textarea and diff modes — keeping it mounted across mode
+          // switches means it stays visible when the user accepts the
+          // title hunk mid-diff (previously the input only existed
+          // inside LinedTextarea's header, so accepting the title
+          // briefly hid it until the body hunks were also resolved).
+          const titleInput = (
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => onTitleChange(e.target.value)}
+              placeholder="Title (e.g. Show HN: Pincer)"
+              maxLength={300}
+              aria-label="Post title"
+              className={
+                "w-full bg-transparent outline-none " +
+                "font-serif text-lg tracking-tight " +
+                "px-3 py-2 placeholder:text-muted-foreground"
+              }
+            />
+          );
+
+          if (proposal) {
+            return (
+              <DiffReview
+                parts={proposal.parts}
+                titleHunk={proposal.titleHunk}
+                onHunkDecision={setHunkStatus}
+                onAcceptAll={acceptAllPending}
+                header={titleInput}
+              />
+            );
+          }
+          if (previewing) {
+            return <PostPreview title={title} body={body} />;
+          }
+          return (
+            <LinedTextarea
+              id="post-body"
+              value={body}
+              onChange={onBodyChange}
+              onSelectionChange={setSelection}
+              placeholder="Write your post here. Markdown works on Reddit and HN."
+              header={titleInput}
+            />
+          );
+        })()}
       </div>
 
       {/* Right column: chat panel. Fixed height matches the body editor
@@ -604,10 +685,29 @@ function AssistantMarkdown({ text }: { text: string }) {
 // ---------------------------------------------------------------------------
 function DiffReview({
   parts,
+  titleHunk,
   onHunkDecision,
+  onAcceptAll,
+  header,
 }: {
   parts: DiffPart[];
+  // Optional atomic title change. Renders at the top of the diff with
+  // its own ✓/✗ pair; titles are short and don't need per-character
+  // hunk granularity.
+  titleHunk?: {
+    id: string;
+    oldTitle: string;
+    newTitle: string;
+  };
   onHunkDecision: (id: string, status: "accepted" | "rejected") => void;
+  // Type-to-accept short circuit. Resolves every pending hunk in a
+  // single state update so multiple onHunkDecision calls don't race
+  // each other through stale closures.
+  onAcceptAll: () => void;
+  // Optional pinned header inside the card (above the scrolling diff
+  // body). Used to keep the title input visible across the diff so
+  // accepting the title hunk doesn't briefly blank it out.
+  header?: React.ReactNode;
 }) {
   const rows = useMemo(() => buildDiffRows(parts), [parts]);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -638,15 +738,14 @@ function DiffReview({
     const isPrintable = e.key.length === 1;
     const isEditKey = e.key === "Enter" || e.key === "Backspace";
     if (!isPrintable && !isEditKey) return;
-    const hasPending = parts.some(
-      (p) => p.kind === "hunk" && p.status === "pending",
-    );
+    // Only fire if there's actually something to resolve. The parent's
+    // onAcceptAll resolves every pending hunk in one state update,
+    // which sidesteps the closure-race problem of calling
+    // onHunkDecision in a loop.
+    const hasPending =
+      parts.some((p) => p.kind === "hunk") || titleHunk !== undefined;
     if (!hasPending) return;
-    for (const p of parts) {
-      if (p.kind === "hunk" && p.status === "pending") {
-        onHunkDecision(p.id, "accepted");
-      }
-    }
+    onAcceptAll();
   }
 
   return (
@@ -655,16 +754,104 @@ function DiffReview({
       tabIndex={0}
       onKeyDown={handleKeyDown}
       className={
-        "rounded-lg border border-foreground/15 bg-background " +
-        "overflow-y-auto font-mono text-xs leading-relaxed " +
-        "outline-none focus:border-ring focus:ring-3 focus:ring-ring/50 " +
+        // Outer card is a flex column so the header strip (when
+        // present) stays pinned at the top while the diff body
+        // scrolls. focus-within so a click inside the header (the
+        // title input) still lights up the card's ring.
+        "flex flex-col rounded-lg border border-foreground/15 bg-background " +
+        "font-mono text-xs leading-relaxed " +
+        "outline-none focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 " +
         EDITOR_HEIGHT_CLASS
       }
     >
-      {rows.map((row, i) => (
-        <DiffRow key={i} row={row} onHunkDecision={onHunkDecision} />
-      ))}
+      {header && (
+        <div className="shrink-0 border-b border-foreground/10">{header}</div>
+      )}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {titleHunk && (
+          <TitleHunkBlock hunk={titleHunk} onDecision={onHunkDecision} />
+        )}
+        {rows.map((row, i) => (
+          <DiffRow key={i} row={row} onHunkDecision={onHunkDecision} />
+        ))}
+      </div>
     </div>
+  );
+}
+
+// Visual block for the title-change hunk at the top of the diff. Renders
+// the old title (rose) above the new title (emerald), then a controls
+// row matching the body-hunk pattern. Sits above a thin divider so it
+// reads as the "title strip" mirroring the editor card's layout.
+function TitleHunkBlock({
+  hunk,
+  onDecision,
+}: {
+  hunk: {
+    id: string;
+    oldTitle: string;
+    newTitle: string;
+  };
+  onDecision: (id: string, status: "accepted" | "rejected") => void;
+}) {
+  const gutterCell =
+    "shrink-0 w-11 px-2 text-right select-none text-foreground/40 font-mono";
+  const contentCell =
+    "flex-1 min-w-0 pl-4 pr-3 font-serif text-base tracking-tight";
+
+  // Hunks only appear in the proposal while still pending — the moment
+  // a decision lands, the hunk is removed from the proposal and this
+  // block unmounts. So no "accepted/rejected fade" branches; each
+  // button click is final and immediately resolves the row.
+  return (
+    <>
+      <div className="flex">
+        <span className={gutterCell + " text-rose-600/70"}>T</span>
+        <span
+          className={
+            contentCell +
+            " bg-rose-500/12 text-rose-800 dark:text-rose-200 line-through"
+          }
+        >
+          {hunk.oldTitle || " "}
+        </span>
+      </div>
+      <div className="flex">
+        <span className={gutterCell + " text-emerald-600/80"}>T</span>
+        <span
+          className={
+            contentCell +
+            " bg-emerald-500/12 text-emerald-800 dark:text-emerald-200"
+          }
+        >
+          {hunk.newTitle || " "}
+        </span>
+      </div>
+      <div className="flex bg-foreground/[0.02] border-y border-foreground/10">
+        <span className={gutterCell} />
+        <span className="flex-1 min-w-0 pl-4 pr-3 flex items-center justify-end gap-2 py-1">
+          <span className="text-[10px] font-mono uppercase tracking-wider text-foreground/50">
+            title change
+          </span>
+          <button
+            type="button"
+            onClick={() => onDecision(hunk.id, "rejected")}
+            aria-label="Reject title change"
+            className="h-6 w-6 inline-flex items-center justify-center rounded text-xs border border-foreground/15 text-foreground/60 hover:border-red-500 hover:text-red-600"
+          >
+            <FaXmark />
+          </button>
+          <button
+            type="button"
+            onClick={() => onDecision(hunk.id, "accepted")}
+            aria-label="Accept title change"
+            className="h-6 w-6 inline-flex items-center justify-center rounded text-xs border border-foreground/15 text-foreground/60 hover:border-green-500 hover:text-green-600"
+          >
+            <FaCheck />
+          </button>
+        </span>
+      </div>
+    </>
   );
 }
 
@@ -677,18 +864,15 @@ type DiffRowData =
       lineNum: number;
       text: string;
       hunkId: string;
-      status: "pending" | "accepted" | "rejected";
     }
   | {
       kind: "added";
       text: string;
       hunkId: string;
-      status: "pending" | "accepted" | "rejected";
     }
   | {
       kind: "controls";
       hunkId: string;
-      status: "pending" | "accepted" | "rejected";
     };
 
 function DiffRow({
@@ -720,20 +904,12 @@ function DiffRow({
   }
 
   if (row.kind === "removed") {
-    // Fade out once accepted (the removed content won't end up in the
-    // merged body); stay red while pending or actively rejected. Tint
-    // kept very low (/[0.06]) so it reads as a transparent wash over
-    // the editor's cream background rather than a solid red strip.
-    const fade = row.status === "accepted";
+    // Rendered only while the hunk is still pending — on decision the
+    // hunk converts to "unchanged" upstream and this row unmounts.
+    // So no fade variants: removed lines stay rose-tinted right up
+    // until the moment they disappear.
     return (
-      <div
-        className={
-          "flex " +
-          (fade
-            ? "opacity-40 line-through"
-            : "bg-rose-500/12 text-rose-800 dark:text-rose-200")
-        }
-      >
+      <div className="flex bg-rose-500/12 text-rose-800 dark:text-rose-200">
         <span className={gutterCell + " text-rose-600/70"}>{row.lineNum}</span>
         <span className={contentCell}>{row.text || " "}</span>
       </div>
@@ -741,29 +917,17 @@ function DiffRow({
   }
 
   if (row.kind === "added") {
-    // Fade out once rejected (the added content won't end up in the
-    // merged body); stay green while pending or actively accepted. Same
-    // low tint as the removed rows — solid greens read as alarming on
-    // a long block and dominate the editor's color story.
-    const fade = row.status === "rejected";
     return (
-      <div
-        className={
-          "flex " +
-          (fade
-            ? "opacity-40 line-through"
-            : "bg-emerald-500/12 text-emerald-800 dark:text-emerald-200")
-        }
-      >
+      <div className="flex bg-emerald-500/12 text-emerald-800 dark:text-emerald-200">
         <span className={gutterCell + " text-emerald-600/80"}>+</span>
         <span className={contentCell}>{row.text || " "}</span>
       </div>
     );
   }
 
-  // controls — accept/reject buttons and a small status label, anchored
-  // at the right edge of the row to make the diff feel like a review
-  // surface.
+  // controls — accept/reject buttons anchored at the right edge of
+  // the row. Hunks are always pending while displayed (resolved hunks
+  // unmount), so no active/selected-state styling.
   return (
     <div className="flex bg-foreground/[0.02] border-y border-foreground/10">
       <span className={gutterCell} />
@@ -772,19 +936,11 @@ function DiffRow({
           contentCell + " flex items-center justify-end gap-2 py-1"
         }
       >
-        <span className="text-[10px] font-mono uppercase tracking-wider text-foreground/50">
-          {row.status}
-        </span>
         <button
           type="button"
           onClick={() => onHunkDecision(row.hunkId, "rejected")}
           aria-label="Reject hunk"
-          className={
-            "h-6 w-6 inline-flex items-center justify-center rounded text-xs " +
-            (row.status === "rejected"
-              ? "bg-red-600 text-white"
-              : "border border-foreground/15 text-foreground/60 hover:border-red-500 hover:text-red-600")
-          }
+          className="h-6 w-6 inline-flex items-center justify-center rounded text-xs border border-foreground/15 text-foreground/60 hover:border-red-500 hover:text-red-600"
         >
           <FaXmark />
         </button>
@@ -792,12 +948,7 @@ function DiffRow({
           type="button"
           onClick={() => onHunkDecision(row.hunkId, "accepted")}
           aria-label="Accept hunk"
-          className={
-            "h-6 w-6 inline-flex items-center justify-center rounded text-xs " +
-            (row.status === "accepted"
-              ? "bg-green-600 text-white"
-              : "border border-foreground/15 text-foreground/60 hover:border-green-500 hover:text-green-600")
-          }
+          className="h-6 w-6 inline-flex items-center justify-center rounded text-xs border border-foreground/15 text-foreground/60 hover:border-green-500 hover:text-green-600"
         >
           <FaCheck />
         </button>
@@ -841,7 +992,6 @@ function buildDiffRows(parts: DiffPart[]): DiffRowData[] {
         lineNum: oldLine,
         text,
         hunkId: part.id,
-        status: part.status,
       });
       oldLine++;
     }
@@ -850,13 +1000,11 @@ function buildDiffRows(parts: DiffPart[]): DiffRowData[] {
         kind: "added",
         text,
         hunkId: part.id,
-        status: part.status,
       });
     }
     rows.push({
       kind: "controls",
       hunkId: part.id,
-      status: part.status,
     });
   }
   return rows;
@@ -884,7 +1032,6 @@ function buildDiffParts(oldText: string, newText: string): DiffPart[] {
         id: crypto.randomUUID(),
         removed: pendingRemoved,
         added: pendingAdded,
-        status: "pending",
       });
       pendingRemoved = "";
       pendingAdded = "";
@@ -926,21 +1073,6 @@ function buildContextualContent(
   return `**Selected ${range}:**\n${quoted}\n\n${userText}`;
 }
 
-function mergeParts(parts: DiffPart[]): string {
-  let out = "";
-  for (const p of parts) {
-    if (p.kind === "unchanged") {
-      out += p.value;
-    } else if (p.status === "accepted") {
-      out += p.added;
-    } else if (p.status === "rejected") {
-      out += p.removed;
-    }
-    // pending hunks shouldn't reach here — Apply is gated on allResolved.
-  }
-  return out;
-}
-
 // ---------------------------------------------------------------------------
 // PostPreview — read-only markdown rendering of the post body.
 //
@@ -950,22 +1082,29 @@ function mergeParts(parts: DiffPart[]): string {
 // instead of the cramped chat-bubble styling AssistantMarkdown uses.
 // Empty body shows a small placeholder instead of an empty box.
 // ---------------------------------------------------------------------------
-function PostPreview({ body }: { body: string }) {
-  const trimmed = body.trim();
+function PostPreview({ title, body }: { title: string; body: string }) {
+  const trimmedBody = body.trim();
+  const trimmedTitle = title.trim();
   return (
     <div
       className={
         "rounded-lg border border-input bg-background p-5 " +
-        "overflow-y-auto " +
+        "overflow-y-auto flex flex-col gap-4 " +
         EDITOR_HEIGHT_CLASS
       }
     >
-      {trimmed === "" ? (
+      {trimmedTitle && (
+        <h1 className="font-serif text-2xl tracking-tight">{trimmedTitle}</h1>
+      )}
+      {trimmedTitle && trimmedBody && (
+        <hr className="border-foreground/10" />
+      )}
+      {trimmedBody === "" && trimmedTitle === "" ? (
         <p className="text-sm text-foreground/40 italic">
           Nothing to preview yet. Write something in Edit mode or ask the
           chat for a draft.
         </p>
-      ) : (
+      ) : trimmedBody === "" ? null : (
         <div className="text-sm leading-relaxed flex flex-col gap-3">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
@@ -1077,12 +1216,17 @@ function LinedTextarea({
   onChange,
   onSelectionChange,
   placeholder,
+  header,
 }: {
   id?: string;
   value: string;
   onChange: (next: string) => void;
   onSelectionChange?: (sel: EditorSelection | null) => void;
   placeholder?: string;
+  // Optional content to render inside the same bordered card, above the
+  // line-numbered body. Used to fold the post's title input into the
+  // editor card so title + body read as one unified "post" surface.
+  header?: React.ReactNode;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
@@ -1168,18 +1312,25 @@ function LinedTextarea({
   return (
     <div
       className={
-        "relative flex min-w-0 rounded-lg border border-input bg-transparent overflow-hidden " +
+        // Outer card: flex column so an optional header strip can sit
+        // above the gutter+textarea row, sharing the border and focus
+        // ring. EDITOR_HEIGHT_CLASS pins the card; min-h-0 on the body
+        // row below lets the textarea claim the remaining space.
+        "flex flex-col min-w-0 rounded-lg border border-input bg-transparent overflow-hidden " +
         "focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 " +
         "transition-colors " +
         EDITOR_HEIGHT_CLASS
       }
     >
+      {header && (
+        <div className="shrink-0 border-b border-foreground/10">{header}</div>
+      )}
+
+      <div className="relative flex flex-1 min-h-0 min-w-0 overflow-hidden">
       {/* Current-line highlight overlay. Absolutely positioned within
-          the editor container so the textarea's scroll movement
-          (caught above into scrollTop state) drives its y. Excluded
-          from pointer events so clicks pass through to the textarea
-          and selection feels native. Only renders while focused so an
-          unfocused editor doesn't show a phantom highlight band. */}
+          this body row (not the outer card) so its y math doesn't have
+          to account for the header's height. Excluded from pointer
+          events so clicks pass through to the textarea. */}
       {overlayVisible && (
         <div
           aria-hidden
@@ -1265,6 +1416,7 @@ function LinedTextarea({
           "overflow-x-hidden break-words"
         }
       />
+      </div>
     </div>
   );
 }

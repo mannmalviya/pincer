@@ -14,10 +14,8 @@ import type { FastifyInstance } from "fastify";
 import { getDb } from "../db.js";
 import { rowToComment, rowToPost, rowToSnapshot } from "../lib/row-mappers.js";
 import { log } from "../lib/log.js";
-import { fetchFor } from "../platforms/index.js";
-import { parseUrl } from "../platforms/parse.js";
-import { tick } from "../watch/tick.js";
-import type { Post, PostSource } from "../types.js";
+import { registerByUrl } from "../lib/register.js";
+import type { PostSource } from "../types.js";
 
 // Request body schemas — Fastify uses these for runtime validation,
 // rejecting bad shapes with a 400 before our handler runs.
@@ -60,87 +58,18 @@ export function registerPostsRoutes(app: FastifyInstance): void {
     { schema: { body: POST_BODY_SCHEMA } },
     async (req, reply) => {
       const { url, watch = true, source = "manual" } = req.body;
-
-      const parsed = parseUrl(url);
-      if (parsed === null) {
-        return reply.code(400).send({
-          error: {
-            code: "unparseable_url",
-            message: `Could not parse a Reddit or HN URL from: ${url}`,
-          },
+      const result = await registerByUrl(url, source, watch);
+      if (!result.ok) {
+        const status = result.code === "unparseable_url" ? 400 : 502;
+        return reply.code(status).send({
+          error: { code: result.code, message: result.message },
         });
       }
-
-      const db = getDb();
-
-      // Have we seen this post before?
-      const existing = db
-        .prepare(
-          `SELECT * FROM posts WHERE platform = ? AND external_id = ?`,
-        )
-        .get(parsed.platform, parsed.externalId) as
-        | Record<string, unknown>
-        | undefined;
-
-      let post: Post;
-      let duplicate = false;
-
-      if (existing !== undefined) {
-        // Already-registered: leave the row alone (don't overwrite the
-        // user's watch_enabled choice), just run a fresh tick to update
-        // its snapshot history.
-        post = rowToPost(existing);
-        duplicate = true;
-      } else {
-        // Fresh URL. We need at minimum a permalink to insert the row,
-        // and the platform fetcher returns the title/body/author/etc.
-        // along with it. The same fetch's data is reused indirectly: the
-        // tick we run after the INSERT calls fetchFor again, which is
-        // mildly wasteful (one extra Reddit/HN request) but keeps the
-        // tick path simple and lets the watch loop and the register
-        // route share identical logic.
-        const data = await fetchFor(parsed.platform, parsed.externalId);
-
-        const insert = db.prepare(
-          `INSERT INTO posts
-             (platform, external_id, permalink, title, body, author,
-              posted_at, watch_enabled, source)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        );
-        const result = insert.run(
-          parsed.platform,
-          data.external_id,
-          data.permalink,
-          data.title,
-          data.body,
-          data.author,
-          data.posted_at,
-          watch ? 1 : 0,
-          source,
-        );
-
-        const inserted = db
-          .prepare(`SELECT * FROM posts WHERE id = ?`)
-          .get(result.lastInsertRowid) as Record<string, unknown>;
-        post = rowToPost(inserted);
-        log.info("post registered", {
-          id: post.id,
-          platform: post.platform,
-          externalId: post.external_id,
-          source,
-        });
-      }
-
-      // Always run one tick on register — for new rows this seeds the
-      // first snapshot + comments; for duplicates it refreshes the data
-      // the user just pasted to confirm.
-      const tickResult = await tick(post);
-
       return reply.send({
-        post,
-        snapshot: tickResult.snapshot,
-        comments_inserted: tickResult.commentsInserted,
-        duplicate,
+        post: result.post,
+        snapshot: result.snapshot,
+        comments_inserted: result.commentsInserted,
+        duplicate: result.duplicate,
       });
     },
   );

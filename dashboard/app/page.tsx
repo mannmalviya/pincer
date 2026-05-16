@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { FaGithub } from "react-icons/fa6";
 
 import { PincerMark } from "@/components/site/pincer-mark";
 import { FeaturesShowcase } from "@/components/site/features-showcase";
@@ -108,7 +109,20 @@ export default function Landing() {
       <footer className="border-t border-foreground/10 px-6 py-8">
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-foreground/50">
           <span className="font-mono">pincer · v0</span>
-          <span>Built on OpenClaw + NVIDIA Nemotron 3</span>
+          <div className="flex items-center gap-4">
+            <span>Built on OpenClaw + NVIDIA Nemotron 3</span>
+            {/* Small GitHub badge. Pill keeps it readable as a link
+                target without competing with the footer's muted tone. */}
+            <a
+              href="https://github.com/mannmalviya/pincer"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-full border border-foreground/15 px-2.5 py-1 hover:bg-foreground/5 hover:text-foreground transition-colors"
+            >
+              <FaGithub className="text-sm" />
+              <span>GitHub</span>
+            </a>
+          </div>
         </div>
       </footer>
     </main>

@@ -101,13 +101,11 @@ async def post_to_reddit(subreddit: str, title: str, body: str) -> str:
             # pixel to settle.
             await page.goto(submit_url, wait_until="domcontentloaded")
 
-            # Accessibility-role locators. These pierce open shadow roots, so
-            # we don't need to know that the composer lives inside a custom
-            # element. The names ("Title", "Post body text field", "Post")
-            # come from the actual aria-label attributes Reddit sets — they
-            # match what browser-use logged earlier when it tried this page.
+            # Title and Post button: accessibility-role locators work
+            # fine for these (the title is a native <textarea name="title">
+            # and the post button is a plain <button>). The body is the
+            # tricky one — see below.
             title_field = page.get_by_role("textbox", name="Title")
-            body_field = page.get_by_role("textbox", name="Post body text field")
             post_button = page.get_by_role("button", name="Post")
 
             # Wait for the composer to hydrate. The page may have loaded but
@@ -115,11 +113,78 @@ async def post_to_reddit(subreddit: str, title: str, body: str) -> str:
             # hydration. We probe the title field as a proxy for "form is ready".
             await title_field.wait_for(state="visible", timeout=15_000)
 
-            # .fill() on Playwright works for both native inputs and
-            # contenteditable elements (it focuses, selects-all, types). The
-            # body field is a contenteditable div but .fill() handles it.
+            # Drive the body composer via its Lit attributes/properties
+            # rather than the UI. Reddit's <shreddit-composer> is a Lit
+            # component with an observed `mode` attribute and a reactive
+            # `value` property, so we can flip modes and set the body
+            # programmatically without clicking through any toolbar.
+            #
+            # Why not click the "Switch to Markdown" toggle: Reddit
+            # recently moved it behind the toolbar's "More options"
+            # overflow menu, and the surfaced rpl-menu-item swallows
+            # programmatic clicks (mouse-coordinate, locator.click,
+            # keyboard Enter) without firing its handler. Driving the
+            # composer directly bypasses the menu, the confirmation
+            # modal, and the toolbar entirely.
+            #
+            # Why mode via attribute but value via property: the `value`
+            # attribute on shreddit-composer is the rich-text JSON
+            # document (`{"document":[...]}`), not plain text. Setting
+            # `setAttribute('value', '**bold**')` is silently ignored
+            # because that string isn't valid rich-text JSON. The Lit
+            # property setter (`c.value = '**bold**'`), in markdown
+            # mode, accepts a raw markdown string and writes it to the
+            # composer's internal store.
+            await page.evaluate(
+                """() => {
+                  const c = document.querySelector(
+                      'shreddit-composer#post-composer_bodytext');
+                  if (!c) throw new Error('shreddit-composer#post-composer_bodytext not found');
+                  c.setAttribute('mode', 'markdown');
+                }"""
+            )
+
+            # Wait for the mode flip to settle before writing the value.
+            # The composer rebuilds its internal state on mode change,
+            # so setting `value` before the markdown branch has rendered
+            # gets clobbered when the rebuild completes.
+            await page.wait_for_function(
+                """() => {
+                  const c = document.querySelector(
+                      'shreddit-composer#post-composer_bodytext');
+                  return c
+                      && c.getAttribute('mode') === 'markdown'
+                      && (c.value || '') === '';
+                }""",
+                timeout=5_000,
+            )
+
+            await page.evaluate(
+                """(body) => {
+                  const c = document.querySelector(
+                      'shreddit-composer#post-composer_bodytext');
+                  c.value = body;
+                }""",
+                body,
+            )
+
+            # Verify the value landed. If `c.value` is still empty after
+            # 5s, the markdown property setter rejected the assignment
+            # (e.g. mode flip didn't fully settle, or Reddit changed the
+            # composer's API). Bail loudly rather than submit an empty
+            # body.
+            await page.wait_for_function(
+                """() => {
+                  const c = document.querySelector(
+                      'shreddit-composer#post-composer_bodytext');
+                  return c
+                      && c.getAttribute('mode') === 'markdown'
+                      && (c.value || '').length > 0;
+                }""",
+                timeout=5_000,
+            )
+
             await title_field.fill(title)
-            await body_field.fill(body)
 
             # Click submit, then wait for the success URL. Reddit's new
             # composer fires TWO redirects after a successful post:

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+import { registerPost } from "@/lib/agent";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -212,6 +213,14 @@ export default function NewPostPage() {
           // the wins here.
           if (data.ok) {
             pushToast(`Posted successfully on ${PLATFORM_META[platform].label}`);
+            // Fire-and-forget: tell the Brev agent to start watching this
+            // post (records snapshots, fetches comments every 60s). Failures
+            // get logged in the browser console but never block the UI.
+            // If NEXT_PUBLIC_AGENT_URL isn't set, this hits localhost:8000
+            // which silently no-ops when no local agent is running.
+            if (data.url) {
+              void registerPost({ url: data.url, source: "published" });
+            }
           }
         } catch (err) {
           // Network-level failure (sidecar not running, CORS blocked,

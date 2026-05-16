@@ -8,6 +8,7 @@ import { FaCheck } from "react-icons/fa6";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { AGENT_BASE } from "@/lib/agent";
 import {
   PLATFORM_META,
   PLATFORM_ORDER,
@@ -55,22 +56,28 @@ export function OnboardingWizard() {
   const [stepIndex, setStepIndex] = useState(0);
   const [submitting, setSubmitting] = useState(false);
 
-  const steps: Array<"select" | "browser-login"> = [
+  // Backfill URLs the user pasted on the optional step 2. Empty list is
+  // valid (skip). Each entry gets POSTed to the agent's /posts on finish.
+  const [backfillUrls, setBackfillUrls] = useState("");
+
+  const steps: Array<"select" | "browser-login" | "backfill"> = [
     "select",
-    ...(selected.length > 0 ? (["browser-login"] as const) : []),
+    ...(selected.length > 0 ? (["browser-login", "backfill"] as const) : []),
   ];
 
   const currentStep = steps[stepIndex];
   const isLastStep = stepIndex === steps.length - 1;
 
   // Selection step is valid once anything is checked; login step is valid
-  // once /login/finish returned ok.
+  // once /login/finish returned ok. Backfill is always valid (skippable).
   const currentValid =
     currentStep === "select"
       ? selected.length > 0
       : currentStep === "browser-login"
         ? loginComplete
-        : false;
+        : currentStep === "backfill"
+          ? true
+          : false;
 
   function togglePlatform(p: Platform) {
     setSelected((cur) =>
@@ -91,9 +98,29 @@ export function OnboardingWizard() {
       // those same platforms already live in the sidecar's profile dir
       // (saved during /login/finish), so the two pieces of state pair up:
       // the cookies enable posting, the localStorage flag drives the UI.
-      // Future work: POST this to the Node agent too so the comment-watch
-      // loop knows which platforms to poll.
       saveSelectedPlatforms(selected);
+
+      // Fan out one POST /posts per backfill URL. Errors per URL are
+      // swallowed; the agent returns duplicate:true on collision so
+      // re-running onboarding doesn't blow up. We deliberately don't block
+      // the redirect on these completing; the watch loop will pick them
+      // up on its next tick regardless.
+      const urls = backfillUrls
+        .split(/\s+/)
+        .map((u) => u.trim())
+        .filter((u) => u.length > 0);
+      if (urls.length > 0) {
+        await Promise.all(
+          urls.map((url) =>
+            fetch(`${AGENT_BASE}/posts`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ url, source: "backfill", watch: true }),
+            }).catch(() => {}),
+          ),
+        );
+      }
+
       router.push("/dashboard");
     } finally {
       setSubmitting(false);
@@ -114,6 +141,10 @@ export function OnboardingWizard() {
           loginComplete={loginComplete}
           onLoginComplete={() => setLoginComplete(true)}
         />
+      )}
+
+      {currentStep === "backfill" && (
+        <BackfillStep value={backfillUrls} onChange={setBackfillUrls} />
       )}
 
       {/* Footer nav — Cancel on first step, Back otherwise; Next/Finish on the right. */}
@@ -157,12 +188,13 @@ function StepIndicator({
   steps,
   current,
 }: {
-  steps: Array<"select" | "browser-login">;
+  steps: Array<"select" | "browser-login" | "backfill">;
   current: number;
 }) {
-  const stepLabel: Record<"select" | "browser-login", string> = {
+  const stepLabel: Record<"select" | "browser-login" | "backfill", string> = {
     select: "Select",
     "browser-login": "Login",
+    backfill: "Backfill",
   };
 
   return (
@@ -609,6 +641,60 @@ function BrowserLoginStep({
             </p>
           )}
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 2 (optional) — backfill existing posts.
+//
+// User pastes one URL per line (Reddit or HN). On Finish the wizard fans out
+// one POST /posts per URL with source:"backfill". The agent parses, seeds an
+// initial snapshot + comments, and the watch loop picks them up from there.
+// Skipping is fine; leave the textarea empty and click Finish.
+// ---------------------------------------------------------------------------
+function BackfillStep({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const count = value
+    .split(/\s+/)
+    .map((u) => u.trim())
+    .filter((u) => u.length > 0).length;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="font-serif text-2xl tracking-tight">
+          Watch your old posts?
+        </CardTitle>
+        <CardDescription>
+          Paste links to any existing Reddit or Hacker News posts you want
+          Pincer to track. One URL per line. Optional, you can skip this and
+          add posts later.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={6}
+          spellCheck={false}
+          placeholder={
+            "https://www.reddit.com/r/SideProject/comments/abc123/...\n" +
+            "https://news.ycombinator.com/item?id=12345678"
+          }
+          className="w-full rounded-lg border border-foreground/15 bg-background px-3 py-2 font-mono text-sm leading-relaxed resize-y focus:outline-none focus:border-foreground/40"
+        />
+        <p className="text-xs text-foreground/55 font-mono">
+          {count === 0
+            ? "No URLs yet. Click Finish to skip."
+            : `${count} URL${count === 1 ? "" : "s"} ready to backfill.`}
+        </p>
       </CardContent>
     </Card>
   );

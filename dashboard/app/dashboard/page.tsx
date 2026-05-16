@@ -1,6 +1,8 @@
 import Link from "next/link";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { BackfillCard } from "./_components/backfill-card";
+import { OverviewStats } from "./_components/overview-stats";
 
 // ---------------------------------------------------------------------------
 // /dashboard — Overview.
@@ -34,12 +36,9 @@ export default function DashboardOverview() {
         </p>
       </section>
 
-      {/* Top-line metrics */}
-      <section className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Stat label="Posts live" value="0" />
-        <Stat label="Pending replies" value="0" />
-        <Stat label="Comments tracked" value="0" />
-      </section>
+      {/* Top-line metrics. Client component, polls the agent's /stats every
+          30s, falls back to dashes when the agent is unreachable. */}
+      <OverviewStats />
 
       {/* Jump-off cards */}
       <section>
@@ -65,21 +64,13 @@ export default function DashboardOverview() {
           />
         </div>
       </section>
-    </div>
-  );
-}
 
-// Stat — one big number + caption. Mono number gives it a console-y feel.
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <Card>
-      <CardContent className="py-6">
-        <p className="text-xs uppercase tracking-wider text-foreground/50">
-          {label}
-        </p>
-        <p className="font-mono text-3xl mt-2">{value}</p>
-      </CardContent>
-    </Card>
+      {/* Backfill, always-available form to add existing Reddit/HN posts
+          to the agent's watch list without re-running onboarding. */}
+      <section>
+        <BackfillCard />
+      </section>
+    </div>
   );
 }
 
