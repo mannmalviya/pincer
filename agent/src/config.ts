@@ -44,30 +44,24 @@ export const USER_AGENT =
 export const CORS_ORIGIN_REGEX =
   /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 
-// NVIDIA NIM (cloud-hosted Nemotron, OpenAI-compatible API). The agent
-// calls this for the "draft a reply to this comment" feature. The base
+// NVIDIA NIM (cloud-hosted Nemotron, OpenAI-compatible API). The base
 // URL stays constant per docs.nvidia.com/nim; only the API key changes
-// per user. Without NIM_API_KEY set, the /reply endpoint returns 503
+// per user. Without NIM_API_KEY set, NIM-backed endpoints return 503
 // rather than 500 so the dashboard can tell "not configured" apart from
 // "configured but failed".
 export const NIM_BASE_URL =
   process.env.NIM_BASE_URL ?? "https://integrate.api.nvidia.com/v1";
 export const NIM_API_KEY = process.env.NIM_API_KEY ?? "";
-// Nemotron 3 Super 120B-A12B on NIM. Headline model for reply drafting
-// and onboarding repo analysis. Override via env when a stronger or
-// cheaper variant becomes available.
-export const NIM_REPLY_MODEL =
-  process.env.NIM_REPLY_MODEL ?? "NVIDIA-Nemotron-3-Super-120B-A12B";
 
-// LLM-orchestrator routing: before every "real" call, a cheap orchestrator
-// model decides whether the task warrants the primary (strong, expensive)
-// or fast (cheap, faster) model. Defaults below pair the Super 120B as
-// primary with the Nano 30B as fast + orchestrator. When the user wants
-// to disable routing (single model everywhere), they set all three to the
-// same value and the orchestrator short-circuits (zero overhead).
-export const NIM_PRIMARY_MODEL =
-  process.env.NIM_PRIMARY_MODEL ?? NIM_REPLY_MODEL;
-export const NIM_FAST_MODEL =
-  process.env.NIM_FAST_MODEL ?? "nemotron-3-nano-30b-a3b";
-export const NIM_ORCHESTRATOR_MODEL =
-  process.env.NIM_ORCHESTRATOR_MODEL ?? NIM_FAST_MODEL;
+// One env var per task. Each call site picks the model that fits its job
+// directly — no router, no routing round-trip. Both default to Nemotron 3
+// Super 120B since both tasks need nuanced multi-paragraph generation;
+// override per task to swap in a cheaper or stronger model.
+//
+// NIM_REPLY_MODEL — drafting replies to comments (/comments/:id/draft-reply).
+// NIM_ANALYZE_MODEL — analyzing a project README during onboarding
+//   (/onboarding/analyze).
+export const NIM_REPLY_MODEL =
+  process.env.NIM_REPLY_MODEL ?? "nvidia/nemotron-3-super-120b-a12b";
+export const NIM_ANALYZE_MODEL =
+  process.env.NIM_ANALYZE_MODEL ?? "nvidia/nemotron-3-super-120b-a12b";

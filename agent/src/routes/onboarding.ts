@@ -26,10 +26,10 @@
 
 import type { FastifyInstance } from "fastify";
 
+import { NIM_ANALYZE_MODEL } from "../config.js";
 import { log } from "../lib/log.js";
 import { getGithubToken } from "../lib/github-oauth.js";
-import { NimError, nimConfigured } from "../lib/nim.js";
-import { orchestratedChatComplete } from "../lib/orchestrate.js";
+import { chatComplete, NimError, nimConfigured } from "../lib/nim.js";
 import {
   getProjectContext,
   setProjectContext,
@@ -316,11 +316,8 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
 
       let modelText: string;
       try {
-        // Force primary tier here: analyzing a project + producing
-        // structured docs + designing a questionnaire is firmly in the
-        // "needs the strong model" bucket; skip the router round-trip.
-        const result = await orchestratedChatComplete({
-          task: "analyze a software project README and produce structured documentation + clarifying questions",
+        modelText = await chatComplete({
+          model: NIM_ANALYZE_MODEL,
           messages: [
             { role: "system", content: system },
             {
@@ -330,9 +327,7 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
           ],
           temperature: 0.3,
           max_tokens: 800,
-          forceTier: "primary",
         });
-        modelText = result.text;
       } catch (err) {
         if (err instanceof NimError) {
           return reply.code(502).send({
