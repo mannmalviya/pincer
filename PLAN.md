@@ -1,10 +1,10 @@
 # Pincer — Hackathon v0
 
-> *Pincer gets a grip on your launch.* Multi-platform launch agent built on OpenClaw — the claw motif is intentional and free brand equity for the demo.
+> *Pincer gets a grip on your launch.* Multi-platform launch agent powered by NVIDIA Nemotron.
 
 ## Context
 
-24-hour NVIDIA hackathon (Cloud + NemoClaw bonus track). **Pincer** is an autonomous marketing agent for indie hackers / project launchers: it generates platform-tailored posts, posts them to Reddit + Discord, monitors comments, surfaces hard ones to a human via a dashboard inbox, and tracks analytics. Powered by OpenClaw (Node.js agent framework by Peter Steinberger) + NVIDIA Nemotron 3 Super, deployed on a Brev launchable, wrapped in NemoClaw's OpenShell sandbox for the bonus prize track.
+24-hour NVIDIA hackathon (Cloud track). **Pincer** is an autonomous marketing agent for indie hackers / project launchers: it generates platform-tailored posts, posts them to Reddit + Discord, monitors comments, surfaces hard ones to a human via a dashboard inbox, and tracks analytics. Powered by NVIDIA Nemotron 3 via NIM (Super for drafting, Nano for classification), deployed on a Brev launchable.
 
 **Why this scope:** the original "post + comment-loop + escalation" workflow is the actual painful part of launch marketing — 30 min of posting + days of comment babysitting. Removing comment monitoring would gut the demo. Auto-replies were dropped because a hallucinated bot reply on a real subreddit during the live demo would torpedo the judging.
 
@@ -18,9 +18,9 @@ Split deployment: agent + SQLite + browser-harness sidecar run on Brev 24/7; das
 [User's laptop]                  [Brev launchable]
 ┌──────────────────────┐         ┌─────────────────────────────────────────────────────────┐
 │ Next.js Dashboard    │         │                                                         │
-│ - Onboarding wizard  │  HTTPS  │  Node Agent (OpenClaw)        Python sidecar            │
+│ - Onboarding wizard  │  HTTPS  │  Node Agent (Fastify)         Python sidecar            │
 │ - Compose / approve  │ ──────► │  - HTTP API server      ────► (browser-harness)         │
-│ - Live analytics     │         │  - Skills orchestration  HTTP  - FastAPI wrapping       │
+│ - Live analytics     │         │  - 60s watch loop        HTTP  - FastAPI wrapping       │
 │ - Escalation inbox   │ ◄────── │  - Calls Nemotron NIM   ◄────   browser-harness         │
 │ (stateless — no DB)  │  JSON   │                                - Drives a real Chrome   │
 └──────────────────────┘         │         │                       via CDP                 │
@@ -32,9 +32,8 @@ Split deployment: agent + SQLite + browser-harness sidecar run on Brev 24/7; das
                                  │  cookies, not API tokens)                               │
                                  └─────────────────────────────────────────────────────────┘
 
-                 Agent + sidecar wrapped in NemoClaw / OpenShell sandbox.
-                 Egress policy: reddit.com, x.com, instagram.com, tiktok.com,
-                 news.ycombinator.com, integrate.api.nvidia.com,
+                 Egress (informational): reddit.com, x.com, instagram.com,
+                 tiktok.com, news.ycombinator.com, integrate.api.nvidia.com,
                  cloud.browser-use.com (if using their hosted browsers).
 
                  Auth: dashboard sends a shared bearer token (env var on
@@ -42,7 +41,7 @@ Split deployment: agent + SQLite + browser-harness sidecar run on Brev 24/7; das
                  accepts requests from the Node agent on localhost.
 ```
 
-**Why the split (Shape 1):** The agent needs to run 24/7 (poll loop + comment monitoring), which a laptop can't deliver. Brev gives us always-on hosting with NemoClaw + NIM pre-wired. The dashboard is the operator's local viewer/controller — keeping it on the user's machine matches the single-user, clone-and-run-local product story. SQLite stays single-host (lives with the agent, which is the only writer), so no replication or distributed-database concerns. Dashboard never touches the DB directly; every page reads via the agent's HTTP API and renders the JSON.
+**Why the split (Shape 1):** The agent needs to run 24/7 (poll loop + comment monitoring), which a laptop can't deliver. Brev gives us always-on hosting in the same network neighborhood as NIM. The dashboard is the operator's local viewer/controller — keeping it on the user's machine matches the single-user, clone-and-run-local product story. SQLite stays single-host (lives with the agent, which is the only writer), so no replication or distributed-database concerns. Dashboard never touches the DB directly; every page reads via the agent's HTTP API and renders the JSON.
 
 **Why browser-harness sidecar (not platform APIs):** Every supported platform (Reddit, X, Instagram, TikTok, HN) gets handled the same way — drive a real browser, no per-platform API integration, no developer-app registrations. The Node agent stays the system of record (orchestration, DB, NIM); browser-harness handles the irreducibly browser-shaped work. Sidecar (not embedded) because browser-harness is Python and Pincer's agent is TS — easier to keep them in their native languages than force a cross-language bridge inside one process. Captchas + stealth are delegated to Browser Use Cloud (free tier: 3 concurrent browsers + captcha solving included).
 
@@ -50,36 +49,24 @@ Split deployment: agent + SQLite + browser-harness sidecar run on Brev 24/7; das
 
 **Why NIM not local Ollama:** Cloud track. NIM at `integrate.api.nvidia.com` is OpenAI-compatible, free during preview, and removes the "did the model load" failure mode from the demo. Nemotron 3 Super 120B for the headline; fall back to Nemotron 3 Nano for the cheap classification step (FAQ vs needs-human).
 
-**Why NemoClaw on top:** bonus track. The egress policy YAML is the demo artifact — show judges that the agent is constrained to four hosts and any drift triggers a TUI approval prompt.
-
 ## File structure
 
 ```
 pincer/
-├── agent/                          # Runs on Brev. OpenClaw agent (Node.js 22+)
-│   ├── openclaw.json               # agent config: skills allowlist, model = nemotron-3-super
+├── agent/                          # Runs on Brev. Node.js 22+ Fastify service.
 │   ├── src/
-│   │   ├── loop.ts                 # main poll loop (every 60s)
-│   │   ├── server.ts               # HTTP API server (Fastify/Hono) — dashboard hits this
-│   │   ├── nemotron.ts             # NIM client (OpenAI-compat SDK, base_url=integrate.api.nvidia.com)
+│   │   ├── index.ts                # entrypoint: db init, start server, start watch loop
+│   │   ├── server.ts               # Fastify factory: CORS, routes, error handler
+│   │   ├── watch/loop.ts           # main 60s poll loop (with adaptive backoff per post)
+│   │   ├── lib/nim.ts              # NIM client (OpenAI-shape fetch, base_url=integrate.api.nvidia.com)
 │   │   ├── db.ts                   # better-sqlite3 wrapper, single writer
-│   │   ├── browser-client.ts       # thin HTTP client to the Python sidecar (localhost)
+│   │   ├── routes/                 # one file per route group (posts, comments, stats, reply, ...)
 │   │   └── platforms/
-│   │       ├── reddit.ts           # builds Reddit-specific browser-harness tasks; calls browser-client
-│   │       ├── discord.ts          # builds Discord-specific browser-harness tasks
-│   │       ├── x.ts                # X / Twitter tasks
-│   │       ├── instagram.ts        # Instagram tasks
-│   │       ├── tiktok.ts           # TikTok tasks
-│   │       └── hn.ts               # Hacker News tasks (now also via browser-harness)
-│   ├── data.db                     # SQLite lives next to the agent on Brev, gitignored
-│   └── skills/                     # SKILL.md folders, AgentSkills format
-│       ├── generate-post/SKILL.md          # platform-tailored post drafting
-│       ├── post-to-platform/SKILL.md       # generic "post to <platform>"; routes via platforms/*
-│       ├── poll-comments/SKILL.md          # pulls new comments since last cursor (per platform)
-│       ├── classify-comment/SKILL.md       # FAQ / needs-human / spam (cheap Nano call)
-│       └── escalate-to-human/SKILL.md      # writes row to escalations table
+│   │       ├── reddit.ts           # Reddit public .json fetcher
+│   │       └── hn.ts               # Hacker News v0 + Algolia fetchers
+│   └── agent.sqlite                # SQLite lives next to the agent on Brev, gitignored
 │
-├── browser-sidecar/                # Runs on Brev. Python service wrapping browser-harness
+├── browser-sidecar/                # Runs on the laptop. Python service wrapping browser-harness
 │   ├── pyproject.toml              # deps: fastapi, uvicorn, browser-harness
 │   ├── app.py                      # FastAPI: POST /run-task accepts a natural-language task + cookies
 │   └── agent-workspace/            # browser-harness's own workspace (domain skills emerge here)
@@ -91,11 +78,9 @@ pincer/
 │   │   ├── inbox/page.tsx          # escalations list, one-click reply (sends back through agent)
 │   │   ├── analytics/page.tsx      # recharts: views, upvotes, comments-over-time per platform
 │   │   └── api/                    # thin Next.js proxies that forward to the agent (auth + CORS)
-│   └── lib/agent-client.ts         # fetch wrapper: bearer auth, base URL from PINCER_AGENT_URL env
+│   └── lib/agent.ts                # fetch wrapper: base URL from NEXT_PUBLIC_AGENT_URL env
 │
-├── policies/
-│   └── nemoclaw.yaml               # egress allowlist, demo artifact (Brev side)
-└── README.md                       # setup: agent + sidecar on Brev, dashboard on laptop
+└── README.md                       # setup: agent on Brev, dashboard + sidecar on laptop
 ```
 
 ## Database schema (SQLite)
@@ -114,16 +99,16 @@ escalations(id, comment_id, status, suggested_reply, human_reply, resolved_at)
 analytics_snapshots(id, platform_post_id, captured_at, upvotes, views, comment_count)
 ```
 
-## Skills to build (5 total)
+## Capabilities to build (5 total)
 
-Each is a directory with `SKILL.md` (YAML frontmatter + natural-language instructions per OpenClaw spec). The skill body tells Nemotron how/when to invoke the underlying TS function exposed via the OpenClaw plugin loader. Anything that touches a browser routes through `browser-client.ts` → Python sidecar → real Chrome.
+The agent exposes these as HTTP routes (or internal helpers called by the watch loop). Anything that touches a browser routes through the Python sidecar on the laptop.
 
-| Skill | Reuses | Purpose |
+| Capability | Reuses | Purpose |
 |---|---|---|
-| `generate-post` | `nemotron.ts` | One product brief in → N platform-specific drafts out. Reddit = problem-first, X = punchy, HN = blunt title. |
-| `post-to-platform` | `platforms/<name>.ts` → `browser-client.ts` | Generic submit. Routes by platform: each `platforms/<name>.ts` knows how to phrase the task for browser-harness ("post to /r/test with title X and body Y"). Persists `platform_posts` row + URL on success. |
-| `poll-comments` | `platforms/<name>.ts` → `browser-client.ts` | Per-platform cursor-based pull via browser-harness, dedupe on `external_id`, insert into `comments`. |
-| `classify-comment` | `nemotron.ts` (Nano) | Returns one of `faq` / `needs_human` / `spam`. Cheap call so we can run it on every new comment. |
+| `generate-post` | `lib/nim.ts` | One product brief in → N platform-specific drafts out. Reddit = problem-first, X = punchy, HN = blunt title. |
+| `post-to-platform` | sidecar over HTTP | Generic submit. The sidecar's `platforms/<name>.py` knows how to drive the browser ("post to /r/test with title X and body Y"). Agent persists `platform_posts` row + URL on success. |
+| `poll-comments` | `platforms/<name>.ts` | Per-platform cursor-based pull via Reddit/HN public APIs, dedupe on `external_id`, insert into `comments`. |
+| `classify-comment` | `lib/nim.ts` (Nano) | Returns one of `faq` / `needs_human` / `spam`. Cheap call so we can run it on every new comment. |
 | `escalate-to-human` | `db.ts` | If `needs_human`, draft a tentative reply with Nemotron Super, write `escalations` row. Dashboard inbox picks it up. |
 
 ## 24-hour schedule
@@ -132,47 +117,43 @@ Time-boxed. If a phase runs over, drop the listed cut-line items, not the next p
 
 | Hours | Milestone | Cut-line if behind |
 |---|---|---|
-| 0-1 | Brev launchable up. NemoClaw installed (`curl … nemoclaw.sh`). NIM API key in env. Browser Use Cloud API key obtained. Repo skeleton + db schema. | — |
-| 1-3 | Python sidecar booted with browser-harness. `nemotron.ts` calling NIM works. Manual test: a one-shot script posts to r/test via the sidecar. | — |
-| 3-6 | OpenClaw agent runs `generate-post` → `post-to-platform` (Reddit only) end-to-end from CLI. Session cookies persist across runs. | — |
+| 0-1 | Brev launchable up. NIM API key in env. Browser Use Cloud API key obtained. Repo skeleton + db schema. | — |
+| 1-3 | Python sidecar booted with browser-harness. `lib/nim.ts` calling NIM works. Manual test: a one-shot script posts to r/test via the sidecar. | — |
+| 3-6 | Agent runs `generate-post` → `post-to-platform` (Reddit only) end-to-end from CLI. Session cookies persist across runs. | — |
 | 6-10 | Next.js dashboard: onboarding wizard + compose page. "Draft posts" button hits agent over a thin HTTP shim. Wizard captures username + password, kicks off a browser-harness login session, stores cookies. | Drop onboarding wizard, pre-seed cookies in DB. |
-| 10-14 | `poll-comments` skill + comment loop running on 60s timer. Comments visible in dashboard. Add X as the second supported platform. | Reddit only, skip X. |
+| 10-14 | `poll-comments` + comment loop running on 60s timer. Comments visible in dashboard. Add X as the second supported platform. | Reddit only, skip X. |
 | 14-18 | `classify-comment` + `escalate-to-human`. Inbox page renders pending escalations with one-click reply. | Drop suggested-reply drafting, just surface raw comment. |
 | 18-21 | Analytics page (recharts), `analytics_snapshots` populated every 5 min. HN added (read + post via browser-harness). | Drop HN, Reddit + X only. |
-| 21-23 | NemoClaw policy YAML locked down to the egress allowlist. Verify the TUI approval prompt fires when you try to curl elsewhere — this is the bonus-track demo moment. | Drop NemoClaw, accept losing bonus track. |
+| 21-23 | Polish pass: settings page (poll interval, adaptive backoff), agent status hero on the dashboard, suggested replies via Nemotron Super for the inbox. | Skip settings page, ship with hardcoded interval. |
 | 23-24 | Demo script rehearsal. README. Submission video. | — |
 
 ## Critical files to create/modify
 
-- [agent/openclaw.json](agent/openclaw.json) — sets agent name, model `nemotron-3-super`, skills allowlist
-- [agent/src/nemotron.ts](agent/src/nemotron.ts) — OpenAI SDK pointed at `https://integrate.api.nvidia.com/v1`, two helpers: `super()` and `nano()`
-- [agent/src/server.ts](agent/src/server.ts) — HTTP API server: `/api/accounts`, `/api/draft`, `/api/publish`, `/api/escalations`, `/api/posts/:id`. Bearer-auth via `PINCER_AGENT_TOKEN`.
-- [agent/src/browser-client.ts](agent/src/browser-client.ts) — fetch wrapper around the Python sidecar at `http://localhost:<port>`. Handles task submission, cookie persistence, result polling.
-- [agent/src/loop.ts](agent/src/loop.ts) — `setInterval(60_000)` calling `poll-comments` then `classify-comment` for each new row
-- [agent/src/db.ts](agent/src/db.ts) — single better-sqlite3 connection, prepared statements for the 6 tables; AES helpers for `session_encrypted`
-- [agent/src/platforms/](agent/src/platforms/) — one file per platform, each exposes `submit(content) / pollComments(cursor) / fetchMetrics(externalId)` and translates them into browser-harness task strings
-- [agent/skills/*/SKILL.md](agent/skills/) — 5 skill files, AgentSkills YAML-frontmatter format
+- [agent/src/lib/nim.ts](agent/src/lib/nim.ts) — OpenAI-shape fetch pointed at `https://integrate.api.nvidia.com/v1`, used for both reply drafting and comment classification
+- [agent/src/server.ts](agent/src/server.ts) — Fastify factory: registers CORS + every route group + uniform error handler
+- [agent/src/routes/](agent/src/routes/) — one file per route group: `posts`, `comments`, `stats`, `reply`, `settings`, `backfill-user`, `health`, `onboarding`
+- [agent/src/watch/loop.ts](agent/src/watch/loop.ts) — scheduler driven by `base_poll_interval_seconds` from settings; per-post adaptive due-time check
+- [agent/src/db.ts](agent/src/db.ts) — single better-sqlite3 connection, schema-on-boot + idempotent column-add migrations
+- [agent/src/platforms/](agent/src/platforms/) — one file per platform (`reddit.ts`, `hn.ts`), each exposes a `fetchPost(externalId)` returning normalized FetchedPost + FetchedComment shapes
 - [browser-sidecar/app.py](browser-sidecar/app.py) — FastAPI wrapping browser-harness. Endpoints: `POST /run-task` (natural-language task + session cookies in, result + new cookies out), `GET /health`
-- [dashboard/lib/agent-client.ts](dashboard/lib/agent-client.ts) — fetch wrapper, reads `PINCER_AGENT_URL` + `PINCER_AGENT_TOKEN` from env, attaches bearer header to every request
-- [dashboard/app/inbox/page.tsx](dashboard/app/inbox/page.tsx) — server component fetching `GET /api/escalations?status=pending` via agent-client
-- [dashboard/app/compose/page.tsx](dashboard/app/compose/page.tsx) — POSTs to agent's `/api/draft` (returns N platform drafts); "Approve & post all" calls `/api/publish`
-- [policies/nemoclaw.yaml](policies/nemoclaw.yaml) — egress allowlist, demo artifact
+- [dashboard/lib/agent.ts](dashboard/lib/agent.ts) — fetch wrapper, reads `NEXT_PUBLIC_AGENT_URL` from env, one helper per agent endpoint
+- [dashboard/app/dashboard/inbox/page.tsx](dashboard/app/dashboard/inbox/page.tsx) — escalations list (suggested-reply via the agent's `/comments/:id/draft-reply` route)
+- [dashboard/app/dashboard/newpost/page.tsx](dashboard/app/dashboard/newpost/page.tsx) — drafts + per-platform publish flow
 
 ## Verification
 
 End-to-end demo run (also the script for the submission video):
 
-1. Fresh Brev box. Run `curl … nemoclaw.sh | bash`, accept defaults, pick `nemotron-3-super` via NIM. Grab a Browser Use Cloud API key from `cloud.browser-use.com/new-api-key`.
-2. **On Brev (sidecar):** `cd pincer/browser-sidecar && uv sync && uv run uvicorn app:app --port 9000` (boots the Python service). With `BROWSER_USE_CLOUD_KEY` in `.env`, browser-harness uses a hosted browser; otherwise it spins a local headless Chrome.
-3. **On Brev (agent):** `cd pincer/agent && npm install && npm run db:init && npm run start` (boots OpenClaw agent + HTTP API on port 8080, configured to call the sidecar at localhost:9000). Expose port 8080 publicly via the Brev launchable; note the URL + the `PINCER_AGENT_TOKEN` from `.env`.
-4. **On laptop:** `cd pincer/dashboard && PINCER_AGENT_URL=https://<brev-url> PINCER_AGENT_TOKEN=<token> npm run dev`. Dashboard boots at `localhost:3000`, talking to the Brev agent.
+1. Fresh Brev box. Install Node 22 + build tools. Set `NIM_API_KEY` in env. Grab a Browser Use Cloud API key from `cloud.browser-use.com/new-api-key` (optional).
+2. **On laptop (sidecar):** `cd pincer/browser-sidecar && uv sync && uv run uvicorn app:app --port 9000` (boots the Python service). With `BROWSER_USE_CLOUD_KEY` in `.env`, browser-harness uses a hosted browser; otherwise it spins a local Chrome via the user's existing profile.
+3. **On Brev (agent):** `cd pincer/agent && npm install && npm run build && npm run start` (boots the Fastify agent on `0.0.0.0:8000` with the watch loop). Expose port 8000 publicly via the Brev launchable; note the secure-link URL.
+4. **On laptop:** `cd pincer/dashboard && NEXT_PUBLIC_AGENT_URL=https://<brev-url> npm run dev`. Dashboard boots at `localhost:3000`, talking to the Brev agent.
 5. Open dashboard → Onboarding → pick platforms (Reddit, X). For each, paste username + password. Dashboard POSTs to agent, agent forwards a `login` task to the sidecar; browser-harness logs in, returns cookies, agent encrypts + stores them in `accounts.session_encrypted`.
 6. Compose page → paste a 3-line product brief ("We just launched FooLint, a TypeScript linter for…"). Click **Draft posts**. Two platform-specific drafts render side-by-side. Edit one. Click **Approve & post all**.
 7. Within seconds, the post URLs render on the page (sidecar drove the browser, sites confirm the submit).
 8. Have a teammate comment on the Reddit post with both an FAQ-style question ("Is it free?") and a hard one ("How does this compare to Biome's quirks-mode?"). Wait ≤60s.
 9. Inbox tab shows one pending escalation (the hard one) with a Nemotron-drafted suggested reply. Click **Edit & send** → reply appears on Reddit (again via the sidecar).
 10. Analytics tab: chart shows comment-count growing.
-11. **NemoClaw bonus moment:** in another terminal inside the sandbox, `curl https://example.com`. The OpenShell TUI prompts for approval. Deny it. Show judges `policies/nemoclaw.yaml` — only the platform domains + NIM + Browser Use Cloud are allowed.
 
 ## Out of scope for v0 (mention in README as v1+)
 
@@ -188,6 +169,5 @@ End-to-end demo run (also the script for the submission video):
 1. **Captchas during live demo.** Browser automation triggers captchas more often than API integrations. Mitigation: rely on Browser Use Cloud's free-tier captcha solving; pre-warm sessions before judging starts so each platform has fresh cookies.
 2. **Account flagging by anti-bot systems.** Reddit + X have aggressive heuristics. Mitigation: lean on browser-harness's domain skills (human-like timing, no parallel sessions per platform), demo against `r/test` or a sub the team mods.
 3. **NIM rate limits.** Free preview tier may throttle. Have an Ollama-on-Brev fallback ready: `OLLAMA_BASE_URL` env switch in `nemotron.ts`.
-4. **NemoClaw setup eats too long.** It's early-preview software. Hard time-box it to the 21-23h slot; if it doesn't work, ship without and skip the bonus track.
-5. **Sidecar process death.** If browser-harness or its Chrome dies mid-loop, the agent silently stops posting. Mitigation: agent calls `/health` on every loop iteration; on failure, restart the sidecar via `pm2` and skip the cycle.
-6. **Session expiry.** Cookies for any platform can be invalidated by the platform at any time. Mitigation: on a `login required` task failure, surface an "X needs re-auth" escalation in the dashboard instead of silently failing.
+4. **Sidecar process death.** If browser-harness or its Chrome dies mid-loop, the agent silently stops posting. Mitigation: agent calls `/health` on every loop iteration; on failure, restart the sidecar via `pm2` and skip the cycle.
+5. **Session expiry.** Cookies for any platform can be invalidated by the platform at any time. Mitigation: on a `login required` task failure, surface an "X needs re-auth" escalation in the dashboard instead of silently failing.

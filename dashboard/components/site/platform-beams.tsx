@@ -33,15 +33,12 @@ const PLATFORMS: PlatformNode[] = [
   { id: "github",  icon: FaGithub,     color: "currentColor",y: 92, delay: "1.2s" },
 ];
 
-// Right-side infrastructure stack, drawn as a linear chain:
-// Pincer → NemoClaw → OpenClaw. The wires represent the runtime stack
-// Pincer rides on top of, so each node hands off to the next rather
-// than fanning out from the hub. Coordinates set so the chain reads
-// horizontally and the OpenClaw bubble doesn't clip the right edge.
+// Right-side stack: Pincer → Nemotron. Single hand-off representing the
+// LLM Pincer rides on. Positioned so the bubble sits comfortably between
+// the central hub and the right edge.
 type StackNode = { id: string; label: string; x: number; y: number; delay: string };
 const STACK: StackNode[] = [
-  { id: "nemoclaw", label: "NemoClaw", x: 70, y: 50, delay: "0.4s" },
-  { id: "openclaw", label: "OpenClaw", x: 90, y: 50, delay: "1.1s" },
+  { id: "nemotron", label: "Nemotron", x: 80, y: 50, delay: "0.6s" },
 ];
 
 const CENTER = { x: 50, y: 50 };
@@ -71,10 +68,8 @@ export function PlatformBeams() {
           return <Beam key={n.id} d={d} delay={n.delay} />;
         })}
 
-        {/* Right-side beams: linear chain Pincer → NemoClaw → OpenClaw.
-            Each path starts at the previous node (or Pincer for the
-            first segment) so the pulses look like a relay handing off
-            outward instead of two parallel streams from the hub. */}
+        {/* Right-side beams: Pincer → Nemotron. Single relay outward
+            from the hub so the pulse reads as a hand-off to the LLM. */}
         {STACK.map((n, i) => {
           const prev = i === 0 ? CENTER : STACK[i - 1];
           const cx = (prev.x + n.x) / 2;

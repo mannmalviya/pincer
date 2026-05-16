@@ -117,7 +117,7 @@ export default function Landing() {
         <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-foreground/50">
           <span className="font-mono">pincer · v0</span>
           <div className="flex items-center gap-4">
-            <span>Built on OpenClaw + NVIDIA Nemotron 3</span>
+            <span>Built on NVIDIA Nemotron 3 via NIM</span>
             {/* Small GitHub badge. Pill keeps it readable as a link
                 target without competing with the footer's muted tone. */}
             <a
