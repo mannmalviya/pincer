@@ -37,7 +37,7 @@ export default function DashboardLayout({
           <nav className="flex items-center gap-1 text-sm">
             <NavLink href="/dashboard">Overview</NavLink>
             <NavLink href="/dashboard/newpost">New Post</NavLink>
-            <NavLink href="/dashboard/inbox">Inbox</NavLink>
+            <NavLink href="/dashboard/inbox">Posts</NavLink>
             <NavLink href="/dashboard/analytics">Analytics</NavLink>
             {/* Settings, gear-only icon. Keeps the main nav focused on the
                 daily loop and tucks config (backfill, future toggles) one

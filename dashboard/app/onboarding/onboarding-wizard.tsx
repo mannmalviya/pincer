@@ -827,7 +827,12 @@ function ProjectStep({
   async function handleSaveAnswers() {
     setError(null);
     setSavingAnswers(true);
-    const ok = await saveOnboardingAnswers(answers);
+    // Drop unanswered questions before sending. Every question is
+    // optional; the agent only needs the ones the user actually filled
+    // in. Saves the reply route from carrying empty-string grounding
+    // that would dilute its prompt.
+    const filled = answers.filter((a) => a.answer.trim().length > 0);
+    const ok = await saveOnboardingAnswers(filled);
     setSavingAnswers(false);
     if (!ok) {
       setError("Could not save answers. Is the agent reachable?");
@@ -848,9 +853,12 @@ function ProjectStep({
     setAnswers(next);
   }
 
-  const allAnswered =
-    questions.length > 0 &&
-    questions.every((q) => answerFor(q.id).trim().length > 0);
+  // Count how many of the optional questions the user has filled in.
+  // Drives the button label ("Save 2 of 3 and continue" vs. "Skip all
+  // and continue") so the user knows what's about to be saved.
+  const answeredCount = questions.filter(
+    (q) => answerFor(q.id).trim().length > 0,
+  ).length;
 
   // Form is valid when both fields look non-empty. PAT length sanity
   // check (10) catches obvious typos; the agent's own /user verification
@@ -933,9 +941,15 @@ function ProjectStep({
 
         {questions.length > 0 && (
           <div className="flex flex-col gap-4">
-            <p className="text-xs uppercase tracking-wider text-foreground/55 font-mono">
-              A few quick questions
-            </p>
+            <div className="flex flex-col gap-1">
+              <p className="text-xs uppercase tracking-wider text-foreground/55 font-mono">
+                A few quick questions
+              </p>
+              <p className="text-xs text-foreground/55 leading-relaxed">
+                All optional. Skip anything you don&apos;t want to answer
+                and Pincer will just lean on the README.
+              </p>
+            </div>
             {questions.map((q) => (
               <QuestionCard
                 key={q.id}
@@ -952,16 +966,17 @@ function ProjectStep({
           <div className="flex items-center justify-end">
             <Button
               onClick={handleSaveAnswers}
-              disabled={
-                savingAnswers ||
-                (questions.length > 0 && !allAnswered)
-              }
+              disabled={savingAnswers}
             >
               {savingAnswers
                 ? "Saving..."
                 : questions.length === 0
                   ? "Looks good, continue"
-                  : "Save and continue"}
+                  : answeredCount === 0
+                    ? "Skip all and continue"
+                    : answeredCount === questions.length
+                      ? "Save and continue"
+                      : `Save ${answeredCount} of ${questions.length} and continue`}
             </Button>
           </div>
         )}
@@ -1057,11 +1072,28 @@ function QuestionCard({
   onChange: (v: string) => void;
   disabled: boolean;
 }) {
+  const hasValue = value.trim().length > 0;
   return (
     <div className="flex flex-col gap-2">
-      <span className="text-sm font-medium text-foreground/90">
-        {question.text}
-      </span>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-medium text-foreground/90">
+          {question.text}
+        </span>
+        {/* Clear affordance: only meaningful when something is selected.
+            For MCQ this is the only way to un-pick an option (clicking
+            the same row again would just re-select it); for text the
+            user can also just delete the contents, but having the same
+            button on both keeps the visual rhythm consistent. */}
+        {hasValue && !disabled && (
+          <button
+            type="button"
+            onClick={() => onChange("")}
+            className="text-xs text-foreground/55 hover:text-foreground underline-offset-2 hover:underline"
+          >
+            Skip
+          </button>
+        )}
+      </div>
       {question.type === "mcq" ? (
         <ul className="flex flex-col gap-2">
           {question.options.map((opt) => {

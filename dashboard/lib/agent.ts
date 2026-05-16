@@ -85,6 +85,48 @@ export type AgentComment = {
   post_permalink: string;
 };
 
+// One row in GET /posts. Mirrors the agent's `rowToPost` output plus the
+// inlined `latest_snapshot` block the route adds so the dashboard can
+// render score / comment counts without a follow-up request per post.
+export type AgentPost = {
+  id: number;
+  platform: "reddit" | "hn" | "bluesky";
+  external_id: string;
+  permalink: string;
+  title: string | null;
+  body: string | null;
+  author: string | null;
+  // Unix epoch seconds. `posted_at` is the platform timestamp (when it
+  // was actually published); `created_at` is when we registered it on the
+  // agent. Either can be null/0 in odd cases (manual entries pre-fetch),
+  // so callers should treat them as best-effort and fall back gracefully.
+  posted_at: number | null;
+  created_at: number;
+  watch_enabled: boolean;
+  source: "published" | "backfill" | "manual";
+  // null when we haven't yet polled the post (very fresh registration).
+  latest_snapshot: {
+    fetched_at: number;
+    score: number;
+    comment_count: number;
+  } | null;
+};
+
+// Fetch every post the agent is tracking, server-side ordered by
+// created_at DESC. We re-sort client-side by posted_at when available
+// so the shelf reflects "newest on the platform" rather than "newest
+// registered with Pincer".
+export async function fetchPosts(): Promise<AgentPost[] | null> {
+  try {
+    const res = await fetch(`${AGENT_BASE}/posts`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { posts: AgentPost[] };
+    return data.posts;
+  } catch {
+    return null;
+  }
+}
+
 // Returns null on failure (network error or 5xx) so the UI can render a
 // dashed "agent offline" state instead of crashing.
 export async function fetchComments(

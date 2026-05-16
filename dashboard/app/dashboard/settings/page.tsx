@@ -1,6 +1,7 @@
 import { BackfillCard } from "../_components/backfill-card";
 import { DangerZoneCard } from "../_components/danger-zone-card";
 import { GithubCard } from "../_components/github-card";
+import { PlatformsCard } from "../_components/platforms-card";
 import { PollSettingsCard } from "../_components/poll-settings-card";
 
 // /dashboard/settings — single page for everything that's not part of the
@@ -20,6 +21,10 @@ export default function SettingsPage() {
         <p className="text-foreground/70 mt-3 max-w-xl leading-relaxed">
           Add old posts to the watch list or wire up new platforms.
         </p>
+      </section>
+
+      <section>
+        <PlatformsCard />
       </section>
 
       <section>

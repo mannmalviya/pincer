@@ -89,7 +89,7 @@ export function PostEditor({
   onTitleChange: (next: string) => void;
   // Optional platform hint, forwarded to the server so the system prompt
   // can nudge the model toward the right tone. Reddit / HN today.
-  platform?: "reddit" | "hn";
+  platform?: "reddit" | "hn" | "bluesky";
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");

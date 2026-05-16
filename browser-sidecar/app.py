@@ -45,6 +45,7 @@ from playwright.async_api import BrowserContext, Playwright, async_playwright
 from pydantic import BaseModel
 
 from platforms import clear_stale_singleton
+from platforms.bluesky import post_to_bluesky
 from platforms.hackernews import post_to_hn
 from platforms.reddit import post_to_reddit
 
@@ -68,6 +69,7 @@ PROFILE_DIR = str(Path(__file__).resolve().parent / "profile")
 LOGIN_URLS: dict[str, str] = {
     "reddit": "https://www.reddit.com/login",
     "hn": "https://news.ycombinator.com/login",
+    "bluesky": "https://bsky.app/",
     "discord": "https://discord.com/login",
     "x": "https://x.com/i/flow/login",
     "instagram": "https://www.instagram.com/accounts/login/",
@@ -284,6 +286,22 @@ async def post(req: PostRequest) -> PostResponse:
                         error="reddit posts require a 'body' field",
                     )
                 post_url = await post_to_reddit(req.subreddit, req.title, req.body)
+            elif req.platform == "bluesky":
+                # Bluesky has no title field; the entire post is the body.
+                # If the caller supplied a title we prepend it so it reads
+                # as a headline followed by the body, matching how the
+                # dashboard's editor frames "title + body" elsewhere.
+                if not req.body:
+                    return PostResponse(
+                        ok=False,
+                        error="bluesky posts require a 'body' field",
+                    )
+                text = (
+                    f"{req.title}\n\n{req.body}"
+                    if req.title and req.title.strip()
+                    else req.body
+                )
+                post_url = await post_to_bluesky(text)
             elif req.platform in ("hn", "hackernews"):
                 # HN takes a body (self-post) OR a url (link submission), never both.
                 # XOR check: exactly one must be non-None.
@@ -440,6 +458,13 @@ async def login_status(req: LoginStatusRequest) -> LoginStatusResponse:
             status[platform] = await _detect_discord_login()
             continue
 
+        # Bluesky stores session JWTs in localStorage rather than cookies
+        # (AT Protocol uses Bearer tokens), so cookie checks don't help.
+        # Probe the open bsky.app tab's localStorage for a session entry.
+        if platform == "bluesky":
+            status[platform] = await _detect_bluesky_login()
+            continue
+
         cfg = LOGIN_DETECT.get(platform)
         if cfg is None:
             # Unknown platform → can't detect, treat as not-signed-in.
@@ -508,6 +533,49 @@ async def _verify_via_url(url: str, marker: str | None) -> bool:
         return marker.lower() in body.lower()
     except Exception as e:
         log.warning("url verify failed for %s: %s", url, e)
+        return False
+
+
+async def _detect_bluesky_login() -> bool:
+    """Bluesky's web client stores the user's session (accessJwt + refreshJwt)
+    in localStorage rather than cookies. Detection walks every key on every
+    open bsky.app tab and looks for one whose value contains a JWT marker.
+    Returns True the moment we find one, False if no open bsky tab has the
+    session yet."""
+    if _login_ctx is None:
+        return False
+    try:
+        for page in _login_ctx.pages:
+            if "bsky.app" not in page.url:
+                continue
+            try:
+                signed_in = await page.evaluate(
+                    """() => {
+                      try {
+                        for (let i = 0; i < localStorage.length; i++) {
+                          const k = localStorage.key(i);
+                          if (!k) continue;
+                          const v = localStorage.getItem(k) || '';
+                          // The session blob holds either an accessJwt
+                          // (live session) or a refreshJwt (session that
+                          // can be re-hydrated silently). Either one is
+                          // enough to call /post.
+                          if (v.includes('accessJwt') || v.includes('refreshJwt')) {
+                            return true;
+                          }
+                        }
+                        return false;
+                      } catch (e) { return false; }
+                    }"""
+                )
+                if signed_in:
+                    return True
+            except Exception:
+                # Page may have navigated mid-evaluate. Try the next tab.
+                continue
+        return False
+    except Exception as e:
+        log.warning("bluesky detection failed: %s", e)
         return False
 
 

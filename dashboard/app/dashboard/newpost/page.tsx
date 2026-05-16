@@ -413,7 +413,20 @@ export default function NewPostPage() {
           // Hint the model at tone: HN if HN-only or both, otherwise
           // Reddit. The system prompt in /api/llm/edit uses this to
           // bias word choice (no hype on HN, conversational on Reddit).
-          platform={targets.has("hn") && !targets.has("reddit") ? "hn" : "reddit"}
+          platform={
+            // Pick the most constraining platform in the target set so the
+            // model writes within the tightest cap. Bluesky's 300-char hard
+            // limit wins over HN's plain-text rules, which win over Reddit's
+            // full-markdown looseness. When mixed targets are picked the
+            // model leans toward the strictest, which is usually safer than
+            // generating a 4000-char Reddit post and asking the user to
+            // trim it for Bluesky.
+            targets.has("bluesky")
+              ? "bluesky"
+              : targets.has("hn") && !targets.has("reddit")
+                ? "hn"
+                : "reddit"
+          }
         />
       </section>
 

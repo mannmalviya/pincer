@@ -36,22 +36,22 @@ const FEATURES: Feature[] = [
   {
     icon: FaPenToSquare,
     title: "Drafts platform-perfect posts",
-    body: "Give Pincer a three-line brief. It comes back with a Reddit thread that sounds like a Redditor, a Discord blast that sounds like Discord, and an HN title that won't get flagged. Edit, approve, ship — one click.",
+    body: "Give Pincer a three-line brief. It writes a Reddit thread that sounds like a Redditor, a Discord blast that sounds like Discord, and an HN title that won't get flagged.",
   },
   {
     icon: FaEye,
     title: "Watches every post for traction",
-    body: "Every 60 seconds, Pincer polls upvotes, views, and new comments across each platform you posted to. Traction lands on your dashboard in real time — no manual refreshing, no missed window.",
+    body: "Every 60 seconds, Pincer polls upvotes, views, and new comments across each platform you posted to. Traction lands on your dashboard in real time.",
   },
   {
     icon: FaChartLine,
     title: "Surfaces the analytics that matter",
-    body: "Comment velocity, vote curves, platform-by-platform reach. The chart Pincer draws is the chart you'd have built manually at 2am — except it's already done by the time you check.",
+    body: "Comment velocity, vote curves, platform-by-platform reach. The chart you'd have built manually at 2am, already done by the time you check.",
   },
   {
     icon: FaCommentDots,
-    title: "Replies — within the freedom you give it",
-    body: "FAQ-style comments get an auto-reply you've pre-approved. Anything sharp, technical, or skeptical lands in your inbox with a Nemotron-drafted reply ready to edit. You set the autonomy dial.",
+    title: "Helps answer comments",
+    body: "Pincer reads each new comment, drafts a reply in your voice, and queues it for one-tap approval so threads stay alive while you sleep.",
   },
 ];
 

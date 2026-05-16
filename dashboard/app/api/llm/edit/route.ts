@@ -45,7 +45,7 @@ type ChatRequest = {
   messages: ClientMessage[];
   body: string;
   title?: string;
-  platform?: "reddit" | "hn";
+  platform?: "reddit" | "hn" | "bluesky";
 };
 
 // System prompt: anchors the conversation, embeds the current body so
@@ -61,14 +61,21 @@ function buildSystemPrompt(req: ChatRequest): string {
     req.platform === "reddit"
       ? [
           "The target platform is Reddit. Match Reddit conventions: conversational, useful, no overt marketing language.",
-          "FORMATTING: full markdown is supported and rendered. Use **bold**, *italics*, headings (#, ##, ###), bullet/numbered lists, blockquotes (>), code blocks (```), inline code (`...`), and links ([text](url)) when they actually help structure the post. Don't over-format — Reddit posts read best when most lines are prose.",
+          "FORMATTING: full markdown is supported and rendered. Use **bold**, *italics*, headings (#, ##, ###), bullet/numbered lists, blockquotes (>), code blocks (```), inline code (`...`), and links ([text](url)) when they actually help structure the post. Don't over-format, Reddit posts read best when most lines are prose.",
         ].join("\n")
       : req.platform === "hn"
         ? [
             "The target platform is Hacker News. Match HN conventions: factual, technical, no hype, no emoji.",
             "FORMATTING: HN renders no markdown at all. Use plain prose with paragraph breaks (blank lines between paragraphs). Do NOT use any markdown syntax (no **bold**, no *italics*, no headings, no lists, no code fences). For links, write the bare URL.",
           ].join("\n")
-        : "The target platform is not specified; default to a clean, conversational tone.";
+        : req.platform === "bluesky"
+          ? [
+              "The target platform is Bluesky. Match Bluesky conventions: short, conversational, first-person, no hashtags-as-marketing.",
+              "FORMATTING: Bluesky renders no markdown. Use plain prose only. Do NOT use **bold**, *italics*, headings, lists, code fences, or [markdown](links). Write URLs as bare https://... and Bluesky will auto-link them.",
+              "TITLE: Bluesky has no separate title field, but the dashboard keeps title and body as two slots and the sidecar concatenates them as `<title>\\n\\n<body>` before posting. Always propose a `new_title` when you propose a `new_body` (and vice versa). The title should be a punchy one-line hook (think tweet-style opener), and the body is the follow-up. Do not duplicate the title's wording inside the body.",
+              "HARD LIMIT: the COMBINED size of `new_title` + 2 (for the blank line) + `new_body` MUST be 300 characters or fewer. This is a server-enforced cap, anything over 300 chars gets rejected. Budget roughly: title ≤80 chars, body ≤218 chars, but redistribute as needed. Count carefully before returning; if you're unsure, err on the side of shorter. If the current draft is too long, your job is to compress it — return new_title AND new_body that together fit the cap, and explain in `reply` what you cut.",
+            ].join("\n")
+          : "The target platform is not specified; default to a clean, conversational tone.";
 
   return [
     "You are an editor helping the user refine a social-media post.",

@@ -69,14 +69,13 @@ export const PLATFORM_META: Record<Platform, PlatformMeta> = {
     badge: "soon",
     icon: FaDiscord,
     color: "#5865F2",
+    disabled: true,
   },
   bluesky: {
     label: "Bluesky",
     tagline: "Posts and replies at launch via the AT Protocol.",
-    badge: "soon",
     icon: FaBluesky,
     color: "#0085FF",
-    disabled: true,
   },
   instagram: {
     label: "Instagram",
@@ -102,6 +101,7 @@ export const PLATFORM_META: Record<Platform, PlatformMeta> = {
 export const PUBLISHABLE_PLATFORMS: ReadonlySet<Platform> = new Set([
   "reddit",
   "hn",
+  "bluesky",
 ]);
 
 // localStorage key that onboarding writes and the New Post page reads.

@@ -25,6 +25,7 @@ import {
   FaBluesky,
   FaHackerNews,
   FaDiscord,
+  FaGithub,
 } from "react-icons/fa6";
 import { SiVercel } from "react-icons/si";
 import { motion, useReducedMotion } from "motion/react";
@@ -41,6 +42,7 @@ const PLATFORMS: Platform[] = [
   { name: "Reddit", icon: FaReddit },
   { name: "Bluesky", icon: FaBluesky },
   { name: "Hacker News", icon: FaHackerNews },
+  { name: "GitHub", icon: FaGithub },
   { name: "Discord", icon: FaDiscord },
   { name: "Vercel", icon: SiVercel },
 ];
