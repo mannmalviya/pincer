@@ -153,7 +153,7 @@ export async function analyzeRepo(
   // optional-field schema.
   const trimmedUrl = repoUrl?.trim() ?? "";
   try {
-    const res = await fetch(`${AGENT_BASE}/onboarding/analyze`, {
+    const res = await fetch("/api/onboarding/analyze", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -196,7 +196,7 @@ export async function saveOnboardingAnswers(
   answers: ProjectAnswer[],
 ): Promise<boolean> {
   try {
-    const res = await fetch(`${AGENT_BASE}/onboarding/answers`, {
+    const res = await fetch("/api/onboarding/answers", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ answers }),

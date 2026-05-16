@@ -81,6 +81,17 @@ if [[ ! -f "$REPO_DIR/agent/.env" && -f "$REPO_DIR/agent/.env.example" ]]; then
   cp "$REPO_DIR/agent/.env.example" "$REPO_DIR/agent/.env"
 fi
 
+if [[ -f "$REPO_DIR/agent/.env" ]]; then
+  if ! grep -qE '^HOST=' "$REPO_DIR/agent/.env"; then
+    log "adding HOST=0.0.0.0 to agent/.env for Brev routing"
+    printf '\nHOST=0.0.0.0\n' >> "$REPO_DIR/agent/.env"
+  fi
+  if ! grep -qE '^PORT=' "$REPO_DIR/agent/.env"; then
+    log "adding PORT=8000 to agent/.env for Brev routing"
+    printf '\nPORT=8000\n' >> "$REPO_DIR/agent/.env"
+  fi
+fi
+
 # --- 6. Ensure the DB directory exists --------------------------------------
 # Honour DB_PATH from the .env if present; fall back to the default.
 DB_PATH="$(grep -E '^DB_PATH=' "$REPO_DIR/agent/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' || true)"
