@@ -45,6 +45,10 @@ export type PlatformMeta = {
   badge?: string;
   icon: ComponentType<{ className?: string; style?: React.CSSProperties }>;
   color: string;
+  // When true, the platform cannot be selected in onboarding. Used for the
+  // platforms where neither login nor posting is implemented yet, so we
+  // don't tempt users into picking something that does nothing.
+  disabled?: boolean;
 };
 
 export const PLATFORM_META: Record<Platform, PlatformMeta> = {
@@ -73,6 +77,7 @@ export const PLATFORM_META: Record<Platform, PlatformMeta> = {
     badge: "soon",
     icon: FaXTwitter,
     color: "currentColor",
+    disabled: true,
   },
   instagram: {
     label: "Instagram",
@@ -80,6 +85,7 @@ export const PLATFORM_META: Record<Platform, PlatformMeta> = {
     badge: "soon",
     icon: FaInstagram,
     color: "#E4405F",
+    disabled: true,
   },
   tiktok: {
     label: "TikTok",
@@ -87,6 +93,7 @@ export const PLATFORM_META: Record<Platform, PlatformMeta> = {
     badge: "soon",
     icon: FaTiktok,
     color: "currentColor",
+    disabled: true,
   },
 };
 

@@ -27,10 +27,11 @@ export default function Landing() {
           Get a grip on your launch.
         </h1>
 
-        <p className="text-lg sm:text-xl text-foreground/70 mt-6 max-w-xl leading-relaxed">
-          Pincer drafts platform-tailored posts, ships them to Reddit and
-          Discord, and triages every comment — so launch day stops eating
-          your week.
+        {/* YC-inspired serif subhead. Italic accents the payoff phrase so
+            the eye lands on the value, not the mechanism. */}
+        <p className="font-serif text-2xl sm:text-3xl text-foreground/80 mt-8 max-w-2xl leading-snug">
+          Pincer raises the signal-to-noise ratio, so you can focus on
+          what truly matters: <em>building your product</em>.
         </p>
 
         <div className="flex gap-3 mt-10">

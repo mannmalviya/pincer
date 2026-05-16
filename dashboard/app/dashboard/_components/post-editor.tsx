@@ -70,17 +70,29 @@ type Proposal = {
   // bail out of the review entirely.
   proposedBody: string;
   parts: DiffPart[];
+  // Optional title change. The model emits new_title in the JSON
+  // response when it wants to rewrite the headline. We treat the
+  // title as one atomic hunk (no per-character diff — titles are
+  // short and a single accept/reject is the right granularity).
+  titleHunk?: {
+    id: string;
+    oldTitle: string;
+    newTitle: string;
+    status: "pending" | "accepted" | "rejected";
+  };
 };
 
 export function PostEditor({
   body,
   onBodyChange,
   title,
+  onTitleChange,
   platform,
 }: {
   body: string;
   onBodyChange: (next: string) => void;
   title: string;
+  onTitleChange: (next: string) => void;
   // Optional platform hint, forwarded to the server so the system prompt
   // can nudge the model toward the right tone. Reddit / HN today.
   platform?: "reddit" | "hn";
@@ -96,6 +108,13 @@ export function PostEditor({
   // starts (or a proposal arrives), so the user is always looking at
   // editable content when something is about to change.
   const [previewing, setPreviewing] = useState(false);
+
+  // Last non-empty selection the user made in the body textarea. When
+  // present, the chat panel shows a "context chip" and the next sent
+  // message is augmented with a blockquote containing the selected
+  // text and line range. Cleared after send (or when the user dismisses
+  // the chip explicitly).
+  const [selection, setSelection] = useState<EditorSelection | null>(null);
 
   // Holds the in-flight request's AbortController so the stop button
   // (Claude-style square that replaces the arrow while generating) can
@@ -119,15 +138,25 @@ export function PostEditor({
     const text = input.trim();
     if (!text || sending) return;
 
+    // If the user has a selection in the body, fold it into the message
+    // as a quoted context block. Markdown renders the blockquote nicely
+    // in the chat bubble AND the model sees the literal text + line
+    // numbers so it knows exactly which slice to reason about.
+    const content = selection
+      ? buildContextualContent(selection, text)
+      : text;
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
-      content: text,
+      content,
     };
     setMessages((cur) => [...cur, userMessage]);
     setInput("");
     setSending(true);
     setError(null);
+    // Consume the selection — the user said what they wanted to say
+    // about it, no reason to keep it attached to the next message.
+    setSelection(null);
     // Drop out of preview mode the moment a new generation begins —
     // the body is about to change (or the user is about to see a diff),
     // and the editable surface is the right place to land.
@@ -249,11 +278,17 @@ export function PostEditor({
   }, [proposal, allResolved]);
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[1fr_320px] gap-6">
+    <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_320px] gap-6">
       {/* Left column: textarea / diff review / preview. All three
           variants use the same fixed height (EDITOR_HEIGHT_CLASS) so
-          the page layout doesn't reflow when toggling between them. */}
-      <div className="flex flex-col gap-2">
+          the page layout doesn't reflow when toggling between them.
+          min-w-0 on this column is load-bearing: without it, the grid
+          item defaults to min-width:auto (= intrinsic content width),
+          and a wide textarea would push the column past its 1fr share.
+          Combined with minmax(0,1fr) on the grid track above, this
+          lets the textarea actually shrink to the cell's width so
+          wrap="soft" wraps at the visible boundary instead of off-screen. */}
+      <div className="flex flex-col gap-2 min-w-0">
         <div className="flex items-end justify-between">
           <Label htmlFor="post-body">Body</Label>
           {/* Preview toggle. Hidden while a proposal is being reviewed
@@ -286,6 +321,7 @@ export function PostEditor({
             id="post-body"
             value={body}
             onChange={onBodyChange}
+            onSelectionChange={setSelection}
             placeholder="Write your post here. Markdown works on Reddit and HN."
           />
         )}
@@ -339,13 +375,27 @@ export function PostEditor({
           )}
         </div>
 
+        {/* Context chip — appears the moment the user makes a non-empty
+            selection in the body. Shows the line range + a preview of
+            the snippet; clicking the X clears it without sending. On
+            send, sendMessage folds the snippet into the message and
+            then clears this. */}
+        {selection && (
+          <SelectionChip
+            selection={selection}
+            onDismiss={() => setSelection(null)}
+          />
+        )}
+
         <div className="border-t border-foreground/10 p-2 flex gap-2 items-end">
           <AutoGrowTextarea
             value={input}
             onChange={setInput}
             onSubmit={sendMessage}
             disabled={sending}
-            placeholder="Ask the model..."
+            placeholder={
+              selection ? "Ask about the selection..." : "Ask the model..."
+            }
           />
           {/* Claude-Code-style send/stop affordance.
               Two visual states:
@@ -386,6 +436,52 @@ export function PostEditor({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SelectionChip — small affordance shown in the chat panel when the user
+// has a non-empty selection in the body editor. Tells them what's about
+// to be attached to their next message and gives them a way to bail.
+// ---------------------------------------------------------------------------
+function SelectionChip({
+  selection,
+  onDismiss,
+}: {
+  selection: EditorSelection;
+  onDismiss: () => void;
+}) {
+  const range =
+    selection.startLine === selection.endLine
+      ? `Line ${selection.startLine}`
+      : `Lines ${selection.startLine}–${selection.endLine}`;
+  // Strip down to a one-line preview so a multi-line selection doesn't
+  // blow up the chip's height. Trim each line so leading whitespace from
+  // markdown indentation doesn't make the preview look empty.
+  const preview =
+    selection.text
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .join(" / ")
+      .slice(0, 60) || "(blank)";
+  return (
+    <div className="mx-2 mb-1 mt-2 rounded-md border border-[color:var(--brand)]/30 bg-[color:var(--brand)]/[0.06] px-2 py-1.5 flex items-center gap-2 text-xs">
+      <span className="font-mono uppercase tracking-wider text-[color:var(--brand)] shrink-0">
+        {range}
+      </span>
+      <span className="flex-1 min-w-0 truncate text-foreground/70 font-mono">
+        {preview}
+      </span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Remove selection from message"
+        className="shrink-0 inline-flex h-5 w-5 items-center justify-center rounded text-foreground/50 hover:text-foreground hover:bg-foreground/10"
+      >
+        <FaXmark className="text-[10px]" />
+      </button>
     </div>
   );
 }
@@ -514,12 +610,54 @@ function DiffReview({
   onHunkDecision: (id: string, status: "accepted" | "rejected") => void;
 }) {
   const rows = useMemo(() => buildDiffRows(parts), [parts]);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Auto-focus the diff container when a proposal appears so the
+  // "type-to-accept" shortcut is reachable without an extra click.
+  // Selectable text inside still works — selection is independent of
+  // which element has keyboard focus.
+  useEffect(() => {
+    containerRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  // Type-to-accept: any printable keystroke (or Enter/Backspace)
+  // accepts every still-pending hunk. The useEffect upstream sees
+  // allResolved flip to true and auto-applies, dropping the user
+  // back into the textarea with the merged body. We intentionally
+  // do NOT preventDefault — the keystroke is consumed by this flow
+  // and not replayed in the textarea, which matches the user's
+  // expectation that "I touched the diff, my decision is made".
+  function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    // Skip events bubbling up from an actual interactive child
+    // (the accept/reject buttons). Those have their own behavior.
+    const target = e.target as HTMLElement | null;
+    if (target && target.tagName === "BUTTON") return;
+    // Modifier-only chords (Ctrl+C to copy a selection, etc.) shouldn't
+    // count as "typing" — let copy/paste pass through cleanly.
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const isPrintable = e.key.length === 1;
+    const isEditKey = e.key === "Enter" || e.key === "Backspace";
+    if (!isPrintable && !isEditKey) return;
+    const hasPending = parts.some(
+      (p) => p.kind === "hunk" && p.status === "pending",
+    );
+    if (!hasPending) return;
+    for (const p of parts) {
+      if (p.kind === "hunk" && p.status === "pending") {
+        onHunkDecision(p.id, "accepted");
+      }
+    }
+  }
 
   return (
     <div
+      ref={containerRef}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
       className={
         "rounded-lg border border-foreground/15 bg-background " +
         "overflow-y-auto font-mono text-xs leading-relaxed " +
+        "outline-none focus:border-ring focus:ring-3 focus:ring-ring/50 " +
         EDITOR_HEIGHT_CLASS
       }
     >
@@ -583,7 +721,9 @@ function DiffRow({
 
   if (row.kind === "removed") {
     // Fade out once accepted (the removed content won't end up in the
-    // merged body); stay red while pending or actively rejected.
+    // merged body); stay red while pending or actively rejected. Tint
+    // kept very low (/[0.06]) so it reads as a transparent wash over
+    // the editor's cream background rather than a solid red strip.
     const fade = row.status === "accepted";
     return (
       <div
@@ -591,10 +731,10 @@ function DiffRow({
           "flex " +
           (fade
             ? "opacity-40 line-through"
-            : "bg-red-500/10 text-red-700 dark:text-red-300")
+            : "bg-rose-500/12 text-rose-800 dark:text-rose-200")
         }
       >
-        <span className={gutterCell + " text-red-500/70"}>{row.lineNum}</span>
+        <span className={gutterCell + " text-rose-600/70"}>{row.lineNum}</span>
         <span className={contentCell}>{row.text || " "}</span>
       </div>
     );
@@ -602,7 +742,9 @@ function DiffRow({
 
   if (row.kind === "added") {
     // Fade out once rejected (the added content won't end up in the
-    // merged body); stay green while pending or actively accepted.
+    // merged body); stay green while pending or actively accepted. Same
+    // low tint as the removed rows — solid greens read as alarming on
+    // a long block and dominate the editor's color story.
     const fade = row.status === "rejected";
     return (
       <div
@@ -610,10 +752,10 @@ function DiffRow({
           "flex " +
           (fade
             ? "opacity-40 line-through"
-            : "bg-green-500/10 text-green-700 dark:text-green-300")
+            : "bg-emerald-500/12 text-emerald-800 dark:text-emerald-200")
         }
       >
-        <span className={gutterCell + " text-green-600/70"}>+</span>
+        <span className={gutterCell + " text-emerald-600/80"}>+</span>
         <span className={contentCell}>{row.text || " "}</span>
       </div>
     );
@@ -764,6 +906,26 @@ function buildDiffParts(oldText: string, newText: string): DiffPart[] {
   return out;
 }
 
+// Formats a selection + user message into the literal string the model
+// (and the user) will see in the chat. Markdown blockquote so the
+// rendered bubble visually separates context from the user's prompt;
+// line-number prefix so the model can refer back to specific lines
+// when proposing an edit.
+function buildContextualContent(
+  sel: EditorSelection,
+  userText: string,
+): string {
+  const range =
+    sel.startLine === sel.endLine
+      ? `line ${sel.startLine}`
+      : `lines ${sel.startLine}–${sel.endLine}`;
+  const quoted = sel.text
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+  return `**Selected ${range}:**\n${quoted}\n\n${userText}`;
+}
+
 function mergeParts(parts: DiffPart[]): string {
   let out = "";
   for (const p of parts) {
@@ -900,45 +1062,137 @@ function PostPreview({ body }: { body: string }) {
 // The whole component is locked to EDITOR_HEIGHT_CLASS so it doesn't
 // grow with content; the textarea handles overflow via its own scroll.
 // ---------------------------------------------------------------------------
+// Range payload emitted by LinedTextarea whenever the user makes a
+// non-empty selection in the body. Consumed by the chat panel to attach
+// the highlighted span as "context" to the next outgoing message.
+export type EditorSelection = {
+  startLine: number;
+  endLine: number;
+  text: string;
+};
+
 function LinedTextarea({
   id,
   value,
   onChange,
+  onSelectionChange,
   placeholder,
 }: {
   id?: string;
   value: string;
   onChange: (next: string) => void;
+  onSelectionChange?: (sel: EditorSelection | null) => void;
   placeholder?: string;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
 
-  // One entry per visual line. We count via newlines on `value`; long
-  // unwrapped lines still get a single number — same convention as
-  // every other editor. An empty document still shows line 1.
+  // One entry per logical line. We count via newlines on `value`; long
+  // wrapped lines still get a single number — same convention as every
+  // other editor. An empty document still shows line 1.
   const lineNumbers = useMemo(() => {
     const count = Math.max(1, value.split("\n").length);
     return Array.from({ length: count }, (_, i) => i + 1);
   }, [value]);
 
-  // Sync gutter scroll position with the textarea so the numbers stay
-  // visually pinned to their lines as the user scrolls.
-  function handleScroll(e: React.UIEvent<HTMLTextAreaElement>) {
-    if (gutterRef.current) {
-      gutterRef.current.scrollTop = e.currentTarget.scrollTop;
+  // Current-line highlight bookkeeping. We track the logical line the
+  // cursor sits on, the textarea's scroll offset, and whether the
+  // textarea is focused — combining them positions the overlay stripe
+  // (and bolds the matching gutter number) like a VS Code current-line
+  // highlight.
+  const [currentLine, setCurrentLine] = useState(1);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [isFocused, setIsFocused] = useState(false);
+  // Pixel line height of the textarea, read at mount. Used to position
+  // the highlight overlay. We measure rather than hard-code so a future
+  // font/leading change doesn't silently desync the overlay.
+  const [lineHeightPx, setLineHeightPx] = useState(22.75);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const parsed = parseFloat(getComputedStyle(el).lineHeight);
+    if (!Number.isNaN(parsed) && parsed > 0) setLineHeightPx(parsed);
+  }, []);
+
+  // Recompute the cursor's logical line AND surface any non-empty
+  // selection upward so the chat panel can offer it as context. Cheap:
+  // two split-by-newline counts on substrings of the value. Called from
+  // every event that can move the cursor or change the selection.
+  function syncCurrentLine() {
+    const el = textareaRef.current;
+    if (!el) return;
+    const { selectionStart, selectionEnd, value: v } = el;
+    const before = v.slice(0, selectionStart);
+    setCurrentLine(before.split("\n").length);
+
+    if (onSelectionChange) {
+      if (selectionStart === selectionEnd) {
+        onSelectionChange(null);
+      } else {
+        const upToEnd = v.slice(0, selectionEnd);
+        onSelectionChange({
+          startLine: before.split("\n").length,
+          endLine: upToEnd.split("\n").length,
+          text: v.slice(selectionStart, selectionEnd),
+        });
+      }
     }
   }
+
+  // Sync gutter scroll position with the textarea so the numbers stay
+  // visually pinned to their lines as the user scrolls. Also caches
+  // scrollTop in state so the highlight overlay can re-position.
+  function handleScroll(e: React.UIEvent<HTMLTextAreaElement>) {
+    const top = e.currentTarget.scrollTop;
+    setScrollTop(top);
+    if (gutterRef.current) {
+      gutterRef.current.scrollTop = top;
+    }
+  }
+
+  // Vertical pixel offset of the highlight stripe inside the editor
+  // container. py-1.5 on both textarea and gutter = 6px of padding-top.
+  const PADDING_TOP_PX = 6;
+  const overlayTop =
+    PADDING_TOP_PX + (currentLine - 1) * lineHeightPx - scrollTop;
+  // Width of the gutter column — same as min-w-[2.75rem] = 44px. The
+  // overlay starts AFTER the gutter so the line-number column isn't
+  // shaded over.
+  const GUTTER_WIDTH_PX = 44;
+  const overlayVisible =
+    isFocused &&
+    overlayTop > -lineHeightPx &&
+    overlayTop < (textareaRef.current?.clientHeight ?? Infinity);
 
   return (
     <div
       className={
-        "flex rounded-lg border border-input bg-transparent overflow-hidden " +
+        "relative flex min-w-0 rounded-lg border border-input bg-transparent overflow-hidden " +
         "focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 " +
         "transition-colors " +
         EDITOR_HEIGHT_CLASS
       }
     >
+      {/* Current-line highlight overlay. Absolutely positioned within
+          the editor container so the textarea's scroll movement
+          (caught above into scrollTop state) drives its y. Excluded
+          from pointer events so clicks pass through to the textarea
+          and selection feels native. Only renders while focused so an
+          unfocused editor doesn't show a phantom highlight band. */}
+      {overlayVisible && (
+        <div
+          aria-hidden
+          className="absolute pointer-events-none bg-foreground/[0.05]"
+          style={{
+            top: `${overlayTop}px`,
+            left: `${GUTTER_WIDTH_PX}px`,
+            right: 0,
+            height: `${lineHeightPx}px`,
+          }}
+        />
+      )}
+
       {/* Gutter. shrink-0 + min-w pin it at a fixed width so a long
           textarea line can never push it down to zero. overflow:hidden
           because we drive its scrollTop from the textarea below. */}
@@ -952,17 +1206,44 @@ function LinedTextarea({
           "min-w-[2.75rem] box-border"
         }
       >
-        {lineNumbers.map((n) => (
-          <div key={n}>{n}</div>
-        ))}
+        {lineNumbers.map((n) => {
+          const active = isFocused && n === currentLine;
+          return (
+            <div
+              key={n}
+              className={active ? "text-foreground font-semibold" : ""}
+            >
+              {n}
+            </div>
+          );
+        })}
       </div>
 
       <textarea
         ref={textareaRef}
         id={id}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          onChange(e.target.value);
+          // Typing changes the cursor offset (it advances past the
+          // inserted character). React's onChange fires after value
+          // commits, so the selection is already in its new spot.
+          syncCurrentLine();
+        }}
         onScroll={handleScroll}
+        // onSelect covers arrow-key + mouse-click cursor moves;
+        // onKeyUp catches the edge cases where onSelect doesn't fire
+        // (some browsers omit onSelect for cursor moves without
+        // selection change). onClick + onFocus prime the line on
+        // entry.
+        onSelect={syncCurrentLine}
+        onKeyUp={syncCurrentLine}
+        onClick={syncCurrentLine}
+        onFocus={() => {
+          setIsFocused(true);
+          syncCurrentLine();
+        }}
+        onBlur={() => setIsFocused(false)}
         placeholder={placeholder}
         spellCheck={false}
         // wrap=soft keeps long lines visible (no horizontal scroll) so a
@@ -974,10 +1255,11 @@ function LinedTextarea({
         // belt-and-suspenders against URLs and unbroken tokens. pl-4
         // (rather than px-3) gives the text breathing room from the
         // gutter so the first character isn't visually touching the
-        // line-number column.
+        // line-number column. relative + z-10 so the textarea's caret
+        // and selection render on top of the highlight overlay.
         wrap="soft"
         className={
-          "flex-1 min-w-0 resize-none bg-transparent outline-none " +
+          "relative z-10 flex-1 min-w-0 resize-none bg-transparent outline-none " +
           "font-mono text-sm leading-relaxed py-1.5 pl-4 pr-3 " +
           "placeholder:text-muted-foreground " +
           "overflow-x-hidden break-words"

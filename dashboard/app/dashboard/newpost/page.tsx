@@ -5,7 +5,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   loadSelectedPlatforms,
@@ -327,21 +326,10 @@ export default function NewPostPage() {
         </div>
       </section>
 
-      {/* Compose fields. Title is always shown; subreddit only when Reddit
-          is one of the targets. Body is the main "text box" the user will
-          iterate in the next pass (chat panel, NIM-driven edits). */}
+      {/* Compose fields. Subreddit only appears when Reddit is a target;
+          title and body are now bundled inside the PostEditor card so
+          the model can reason about (and rewrite) them as a single post. */}
       <section className="flex flex-col gap-4">
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="post-title">Title</Label>
-          <Input
-            id="post-title"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Show HN: Pincer, an autonomous launch agent"
-            maxLength={300}
-          />
-        </div>
-
         {needsSubreddit && (
           <div className="flex flex-col gap-2">
             <Label htmlFor="post-subreddit">Subreddit</Label>
@@ -358,14 +346,16 @@ export default function NewPostPage() {
           </div>
         )}
 
-        {/* LLM-assisted body editor: textarea on the left, chat panel on
-            the right. The chat talks to /api/llm/edit (Nemotron Super via
-            NIM). Proposed edits switch the left pane into a diff view
-            with per-hunk accept/reject. See post-editor.tsx for details. */}
+        {/* LLM-assisted post editor: title + body combined into one
+            card on the left, chat panel on the right. The chat talks to
+            /api/llm/edit (Nemotron Super via NIM); the model can
+            propose changes to either the title or the body and they
+            land as hunks in the diff view. */}
         <PostEditor
+          title={title}
+          onTitleChange={setTitle}
           body={body}
           onBodyChange={setBody}
-          title={title}
           // Hint the model at tone: HN if HN-only or both, otherwise
           // Reddit. The system prompt in /api/llm/edit uses this to
           // bias word choice (no hype on HN, conversational on Reddit).

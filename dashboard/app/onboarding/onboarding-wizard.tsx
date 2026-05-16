@@ -221,6 +221,7 @@ function SelectStep({
           {PLATFORM_ORDER.map((p) => {
             const meta = PLATFORM_META[p];
             const checked = selected.includes(p);
+            const isDisabled = meta.disabled === true;
             const id = `platform-${p}`;
             const Icon = meta.icon;
             return (
@@ -228,20 +229,30 @@ function SelectStep({
                 {/* The whole row is one click target. <label htmlFor> wires
                     label-click → checkbox-toggle natively. Tabbing into the
                     checkbox still works because it's a real input under the
-                    hood (base-ui Root). */}
+                    hood (base-ui Root). Disabled rows render with reduced
+                    opacity, drop the hover affordance, and the checkbox
+                    refuses input, so click-anywhere on the row is a no-op. */}
                 <label
                   htmlFor={id}
+                  aria-disabled={isDisabled || undefined}
                   className={
-                    "flex items-center gap-3 p-4 rounded-xl border cursor-pointer transition-colors " +
-                    (checked
-                      ? "border-[color:var(--brand)] bg-[color:var(--brand)]/5"
-                      : "border-foreground/10 hover:border-foreground/30 hover:bg-foreground/5")
+                    "flex items-center gap-3 p-4 rounded-xl border transition-colors " +
+                    (isDisabled
+                      ? "border-foreground/10 opacity-50 cursor-not-allowed"
+                      : "cursor-pointer " +
+                        (checked
+                          ? "border-[color:var(--brand)] bg-[color:var(--brand)]/5"
+                          : "border-foreground/10 hover:border-foreground/30 hover:bg-foreground/5"))
                   }
                 >
                   <Checkbox
                     id={id}
                     checked={checked}
-                    onCheckedChange={() => onToggle(p)}
+                    disabled={isDisabled}
+                    onCheckedChange={() => {
+                      if (isDisabled) return;
+                      onToggle(p);
+                    }}
                   />
 
                   {/* Brand glyph in the platform's official color. */}

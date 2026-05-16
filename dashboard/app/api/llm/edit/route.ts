@@ -52,12 +52,31 @@ type ChatRequest = {
 // contract. The contract is permissive — `new_body` is optional — so the
 // model can have a normal chat turn without forcing an edit.
 function buildSystemPrompt(req: ChatRequest): string {
+  // Per-platform tone + formatting constraints. Reddit's new composer
+  // does NOT render most markdown reliably (headings, lists, links,
+  // code blocks all show as literal characters), so when Reddit is the
+  // target we have to lock the model to plain prose with **bold** as
+  // the only allowed formatting. HN renders no markdown at all. The
+  // browser sidecar inserts whatever string the model produced, so this
+  // constraint is the only thing preventing the post from looking
+  // broken on publish.
   const platformLine =
     req.platform === "reddit"
-      ? "The target platform is Reddit. Match Reddit conventions: conversational, useful, no overt marketing language. Markdown allowed."
+      ? [
+          "The target platform is Reddit. Match Reddit conventions: conversational, useful, no overt marketing language.",
+          "FORMATTING (important — Reddit's new composer does NOT render most markdown):",
+          "- Use plain prose with paragraph breaks (blank lines between paragraphs).",
+          "- The ONLY formatting allowed is bold via **text** for emphasis. Reddit renders this reliably.",
+          "- Do NOT use: headings (#, ##, ###), bullet lists (* or -), numbered lists (1.), code blocks (```), inline code (`...`), blockquotes (>), or markdown links ([text](url)).",
+          "- For links, just write the bare URL on its own — Reddit auto-linkifies them.",
+          "- For emphasis other than bold (lists, headings, etc.), rewrite in prose instead.",
+        ].join("\n")
       : req.platform === "hn"
-        ? "The target platform is Hacker News. Match HN conventions: factual, technical, no hype, no emoji."
-        : "The target platform is not specified; default to a clean, conversational tone.";
+        ? [
+            "The target platform is Hacker News. Match HN conventions: factual, technical, no hype, no emoji.",
+            "FORMATTING: HN renders no markdown at all. Use plain prose with paragraph breaks (blank lines between paragraphs). Do NOT use any markdown syntax (no **bold**, no *italics*, no headings, no lists, no code fences). For links, write the bare URL.",
+          ].join("\n")
+        : "The target platform is not specified; default to a clean, conversational tone with no markdown formatting.";
 
   return [
     "You are an editor helping the user refine a social-media post.",
