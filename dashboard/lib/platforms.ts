@@ -3,7 +3,7 @@ import {
   FaReddit,
   FaHackerNews,
   FaDiscord,
-  FaXTwitter,
+  FaBluesky,
   FaInstagram,
   FaTiktok,
 } from "react-icons/fa6";
@@ -19,13 +19,13 @@ import {
 // PLATFORM_META, and add to LOGIN_URLS in browser-sidecar/app.py.
 // ---------------------------------------------------------------------------
 
-export type Platform = "reddit" | "hn" | "discord" | "x" | "instagram" | "tiktok";
+export type Platform = "reddit" | "hn" | "discord" | "bluesky" | "instagram" | "tiktok";
 
 export const PLATFORM_ORDER: Platform[] = [
   "reddit",
   "hn",
   "discord",
-  "x",
+  "bluesky",
   "instagram",
   "tiktok",
 ];
@@ -34,8 +34,7 @@ export const PLATFORM_ORDER: Platform[] = [
 //
 // `icon`  : react-icons component for the brand glyph.
 // `color` : official brand color, inlined so the glyph renders in its true
-//           hue regardless of theme tokens. X stays as `currentColor` since
-//           it has no fixed accent.
+//           hue regardless of theme tokens.
 // `badge` : small uppercase tag for platforms that don't have a working
 //           post path yet. Currently only Reddit + HN can publish; the
 //           others can be selected and logged into for future work.
@@ -71,12 +70,12 @@ export const PLATFORM_META: Record<Platform, PlatformMeta> = {
     icon: FaDiscord,
     color: "#5865F2",
   },
-  x: {
-    label: "X",
-    tagline: "Threads and posts at launch.",
+  bluesky: {
+    label: "Bluesky",
+    tagline: "Posts and replies at launch via the AT Protocol.",
     badge: "soon",
-    icon: FaXTwitter,
-    color: "currentColor",
+    icon: FaBluesky,
+    color: "#0085FF",
     disabled: true,
   },
   instagram: {

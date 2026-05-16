@@ -3,6 +3,7 @@ import { FaGithub } from "react-icons/fa6";
 
 import { PincerMark } from "@/components/site/pincer-mark";
 import { FeaturesShowcase } from "@/components/site/features-showcase";
+import { PlatformBeams } from "@/components/site/platform-beams";
 import { PlatformMarquee } from "@/components/site/platform-marquee";
 
 // ---------------------------------------------------------------------------
@@ -68,7 +69,13 @@ export default function Landing() {
             How it works
           </h2>
 
-          <ol className="grid gap-8 sm:grid-cols-3">
+          {/* Beam diagram: every supported platform flows into the
+              Pincer mark at the center. Sits above the textual steps as
+              a one-glance summary of "we pull from everywhere, route
+              into one inbox". */}
+          <PlatformBeams />
+
+          <ol className="grid gap-8 sm:grid-cols-3 mt-16">
             <Step n={1} title="Connect your accounts">
               Paste your Reddit script-app credentials and a Discord bot
               token. Pincer keeps them in a local SQLite file — nothing

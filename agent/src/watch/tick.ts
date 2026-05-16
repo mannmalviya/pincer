@@ -30,11 +30,17 @@ export async function tick(post: Post): Promise<TickResult> {
   // a clean time series. We explicitly pass `fetched_at` so the value is
   // identical to what we return in the response, instead of relying on
   // SQLite's `DEFAULT (unixepoch())` which would resolve a few microseconds
-  // later.
+  // later. Coalesce score/comment_count to 0 defensively — `score INTEGER
+  // NOT NULL` and `comment_count INTEGER NOT NULL` are unforgiving, and
+  // platforms occasionally omit these fields for removed/dead posts.
+  const safeScore = Number.isFinite(data.score) ? data.score : 0;
+  const safeCommentCount = Number.isFinite(data.comment_count)
+    ? data.comment_count
+    : 0;
   db.prepare(
     `INSERT INTO snapshots (post_id, fetched_at, score, comment_count)
      VALUES (?, ?, ?, ?)`,
-  ).run(post.id, now, data.score, data.comment_count);
+  ).run(post.id, now, safeScore, safeCommentCount);
 
   // Bulk insert comments. INSERT OR IGNORE means duplicates (already-stored
   // comments) silently skip — only newly-seen comments increment changes.
@@ -71,8 +77,8 @@ export async function tick(post: Post): Promise<TickResult> {
 
   return {
     snapshot: {
-      score: data.score,
-      comment_count: data.comment_count,
+      score: safeScore,
+      comment_count: safeCommentCount,
       fetched_at: now,
     },
     commentsInserted,

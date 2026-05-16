@@ -43,3 +43,18 @@ export const USER_AGENT =
 // origin (or replaced with a bearer-token auth scheme).
 export const CORS_ORIGIN_REGEX =
   /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+
+// NVIDIA NIM (cloud-hosted Nemotron, OpenAI-compatible API). The agent
+// calls this for the "draft a reply to this comment" feature. The base
+// URL stays constant per docs.nvidia.com/nim; only the API key changes
+// per user. Without NIM_API_KEY set, the /reply endpoint returns 503
+// rather than 500 so the dashboard can tell "not configured" apart from
+// "configured but failed".
+export const NIM_BASE_URL =
+  process.env.NIM_BASE_URL ?? "https://integrate.api.nvidia.com/v1";
+export const NIM_API_KEY = process.env.NIM_API_KEY ?? "";
+// Nemotron Super 49B v1 on NIM. The 120B-class model isn't currently
+// exposed on integrate.api.nvidia.com; this is the strongest reply-quality
+// model we can call without self-hosting.
+export const NIM_REPLY_MODEL =
+  process.env.NIM_REPLY_MODEL ?? "nvidia/llama-3.3-nemotron-super-49b-v1";

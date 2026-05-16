@@ -110,6 +110,114 @@ export type AgentSettings = {
   adaptive_polling_enabled: boolean;
 };
 
+// Onboarding: ask the agent to clone + analyze the user's repo and return
+// a project summary plus 4-6 clarifying questions for the user.
+export type AnalyzeRepoResult =
+  | { ok: true; summary: string; questions: string[] }
+  | { ok: false; code: string; message: string };
+
+export async function analyzeRepo(
+  repoUrl: string,
+  token?: string,
+): Promise<AnalyzeRepoResult> {
+  try {
+    const res = await fetch(`${AGENT_BASE}/onboarding/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        repo_url: repoUrl,
+        ...(token ? { token } : {}),
+      }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      const err = (body as { error?: { code?: string; message?: string } })
+        ?.error;
+      return {
+        ok: false,
+        code: err?.code ?? `http_${res.status}`,
+        message: err?.message ?? `HTTP ${res.status}`,
+      };
+    }
+    const data = body as { summary: string; questions: string[] };
+    return { ok: true, summary: data.summary, questions: data.questions };
+  } catch (err) {
+    return {
+      ok: false,
+      code: "network_error",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+// Save the user's answers to the analyze-step questions. The agent
+// persists them on its project_context row; the reply route then reads
+// them as additional grounding for drafted comment replies.
+export async function saveOnboardingAnswers(
+  answers: Array<{ question: string; answer: string }>,
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${AGENT_BASE}/onboarding/answers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ answers }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+// Ask the agent to draft a reply for a watched comment via NIM (Nemotron
+// Super). Returns null on transport-level failure; surfaces the agent's
+// own { error: { code, message } } envelope on a non-2xx response so the
+// UI can show useful diagnostics (especially the "nim_not_configured"
+// case where the agent has no NIM_API_KEY).
+export type DraftReplyResult =
+  | { ok: true; draft: string; model: string }
+  | { ok: false; code: string; message: string };
+
+export async function draftReply(
+  commentId: number,
+): Promise<DraftReplyResult> {
+  try {
+    const res = await fetch(
+      `${AGENT_BASE}/comments/${commentId}/draft-reply`,
+      { method: "POST" },
+    );
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      const err = (body as { error?: { code?: string; message?: string } })
+        ?.error;
+      return {
+        ok: false,
+        code: err?.code ?? `http_${res.status}`,
+        message: err?.message ?? `HTTP ${res.status}`,
+      };
+    }
+    const data = body as { draft: string; model: string };
+    return { ok: true, draft: data.draft, model: data.model };
+  } catch (err) {
+    return {
+      ok: false,
+      code: "network_error",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+// Probe the agent's /health endpoint. Returns true on a 2xx response,
+// false otherwise (network error, 5xx, CORS, etc). Used by the dashboard
+// header to render a live connectivity indicator.
+export async function pingAgent(): Promise<boolean> {
+  try {
+    const res = await fetch(`${AGENT_BASE}/health`, { cache: "no-store" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchSettings(): Promise<AgentSettings | null> {
   try {
     const res = await fetch(`${AGENT_BASE}/settings`, { cache: "no-store" });

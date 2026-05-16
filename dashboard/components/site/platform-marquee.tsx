@@ -1,9 +1,9 @@
 "use client";
 
 // ---------------------------------------------------------------------------
-// PlatformMarquee — horizontally-scrolling "Works with" strip for the
+// PlatformMarquee, horizontally-scrolling "Works with" strip for the
 // landing page. Shows the five platforms Pincer supports (or will support):
-// Reddit, X, Hacker News, Discord, Vercel.
+// Reddit, Bluesky, Hacker News, Discord, Vercel.
 //
 // Implementation: classic seamless-loop trick. Render the platform list
 // twice in a row, then translate the inner container from 0 % to -50 % of
@@ -22,7 +22,7 @@
 import type { ComponentType } from "react";
 import {
   FaReddit,
-  FaXTwitter,
+  FaBluesky,
   FaHackerNews,
   FaDiscord,
 } from "react-icons/fa6";
@@ -32,18 +32,14 @@ import { motion, useReducedMotion } from "motion/react";
 type Platform = {
   name: string;
   icon: ComponentType<{ className?: string }>;
-  // X's logo IS the letter X, so rendering "🅧 X" reads as a stutter.
-  // Setting this skips the visible wordmark while keeping `name` available
-  // for the chip's aria-label, so screen readers still announce "X".
-  hideLabel?: boolean;
 };
 
-// Ordering picked for visual rhythm — Reddit + X anchor the front since
+// Ordering picked for visual rhythm. Reddit + Bluesky anchor the front since
 // they're the most recognizable wordmarks; Vercel closes the loop because
 // it's the most "developer-tool" of the set.
 const PLATFORMS: Platform[] = [
   { name: "Reddit", icon: FaReddit },
-  { name: "X", icon: FaXTwitter, hideLabel: true },
+  { name: "Bluesky", icon: FaBluesky },
   { name: "Hacker News", icon: FaHackerNews },
   { name: "Discord", icon: FaDiscord },
   { name: "Vercel", icon: SiVercel },
@@ -129,20 +125,15 @@ function PlatformChip({
   const Icon = platform.icon;
   return (
     <li
-      // mr-20 is the inter-chip spacing — see note on motion.ul about why
+      // mr-20 is the inter-chip spacing. See note on motion.ul about why
       // it's a per-item margin instead of parent flex-gap.
       className="flex items-center gap-4 shrink-0 mr-20"
-      // When the wordmark is hidden, the chip has no text content, so we
-      // expose the name to assistive tech via aria-label.
-      aria-label={platform.hideLabel ? platform.name : undefined}
       aria-hidden={ariaHidden || undefined}
     >
       <Icon className="text-4xl" />
-      {!platform.hideLabel && (
-        <span className="font-serif text-3xl tracking-tight">
-          {platform.name}
-        </span>
-      )}
+      <span className="font-serif text-3xl tracking-tight">
+        {platform.name}
+      </span>
     </li>
   );
 }

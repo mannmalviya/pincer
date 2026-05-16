@@ -8,7 +8,11 @@ import { FaCheck } from "react-icons/fa6";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { AGENT_BASE } from "@/lib/agent";
+import {
+  AGENT_BASE,
+  analyzeRepo,
+  saveOnboardingAnswers,
+} from "@/lib/agent";
 import {
   PLATFORM_META,
   PLATFORM_ORDER,
@@ -60,9 +64,23 @@ export function OnboardingWizard() {
   // valid (skip). Each entry gets POSTed to the agent's /posts on finish.
   const [backfillUrls, setBackfillUrls] = useState("");
 
-  const steps: Array<"select" | "browser-login" | "backfill"> = [
-    "select",
-    ...(selected.length > 0 ? (["browser-login", "backfill"] as const) : []),
+  // Project step state. The repo URL + optional PAT go to /onboarding/analyze;
+  // the agent clones, summarizes, and returns 4-6 questions. The user fills
+  // them in; on Next we POST to /onboarding/answers. Marked done once the
+  // agent has accepted the answers — until then we don't advance.
+  const [repoUrl, setRepoUrl] = useState("");
+  const [repoToken, setRepoToken] = useState("");
+  const [projectSummary, setProjectSummary] = useState<string | null>(null);
+  const [projectQuestions, setProjectQuestions] = useState<string[]>([]);
+  const [projectAnswers, setProjectAnswers] = useState<string[]>([]);
+  const [projectDone, setProjectDone] = useState(false);
+
+  const steps: Array<"project" | "project" | "select" | "browser-login" | "backfill"> = [
+    "project",
+    ...(projectDone ? (["select"] as const) : []),
+    ...(projectDone && selected.length > 0
+      ? (["browser-login", "backfill"] as const)
+      : []),
   ];
 
   const currentStep = steps[stepIndex];
@@ -71,13 +89,15 @@ export function OnboardingWizard() {
   // Selection step is valid once anything is checked; login step is valid
   // once /login/finish returned ok. Backfill is always valid (skippable).
   const currentValid =
-    currentStep === "select"
-      ? selected.length > 0
-      : currentStep === "browser-login"
-        ? loginComplete
-        : currentStep === "backfill"
-          ? true
-          : false;
+    currentStep === "project"
+      ? projectDone
+      : currentStep === "select"
+        ? selected.length > 0
+        : currentStep === "browser-login"
+          ? loginComplete
+          : currentStep === "backfill"
+            ? true
+            : false;
 
   function togglePlatform(p: Platform) {
     setSelected((cur) =>
@@ -130,6 +150,23 @@ export function OnboardingWizard() {
   return (
     <div className="flex flex-col gap-6">
       <StepIndicator steps={steps} current={stepIndex} />
+
+      {currentStep === "project" && (
+        <ProjectStep
+          repoUrl={repoUrl}
+          setRepoUrl={setRepoUrl}
+          repoToken={repoToken}
+          setRepoToken={setRepoToken}
+          summary={projectSummary}
+          setSummary={setProjectSummary}
+          questions={projectQuestions}
+          setQuestions={setProjectQuestions}
+          answers={projectAnswers}
+          setAnswers={setProjectAnswers}
+          done={projectDone}
+          setDone={setProjectDone}
+        />
+      )}
 
       {currentStep === "select" && (
         <SelectStep selected={selected} onToggle={togglePlatform} />
@@ -188,10 +225,11 @@ function StepIndicator({
   steps,
   current,
 }: {
-  steps: Array<"select" | "browser-login" | "backfill">;
+  steps: Array<"project" | "select" | "browser-login" | "backfill">;
   current: number;
 }) {
-  const stepLabel: Record<"select" | "browser-login" | "backfill", string> = {
+  const stepLabel: Record<"project" | "select" | "browser-login" | "backfill", string> = {
+    project: "Project",
     select: "Select",
     "browser-login": "Login",
     backfill: "Backfill",
@@ -695,6 +733,196 @@ function BackfillStep({
             ? "No URLs yet. Click Finish to skip."
             : `${count} URL${count === 1 ? "" : "s"} ready to backfill.`}
         </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 0 (new first step) — project analysis.
+//
+// User pastes a GitHub repo URL (optionally with a PAT for private repos).
+// The agent clones, samples README + key source files, and asks Nemotron
+// to produce a one-sentence project summary plus 4-6 clarifying questions.
+// The user answers those questions; on submit we POST to /onboarding/answers
+// and unlock the rest of the wizard. The reply route later reads the
+// summary + Q/A back into the LLM prompt so drafted replies stay grounded.
+// ---------------------------------------------------------------------------
+function ProjectStep({
+  repoUrl,
+  setRepoUrl,
+  repoToken,
+  setRepoToken,
+  summary,
+  setSummary,
+  questions,
+  setQuestions,
+  answers,
+  setAnswers,
+  done,
+  setDone,
+}: {
+  repoUrl: string;
+  setRepoUrl: (v: string) => void;
+  repoToken: string;
+  setRepoToken: (v: string) => void;
+  summary: string | null;
+  setSummary: (v: string | null) => void;
+  questions: string[];
+  setQuestions: (v: string[]) => void;
+  answers: string[];
+  setAnswers: (v: string[]) => void;
+  done: boolean;
+  setDone: (v: boolean) => void;
+}) {
+  const [analyzing, setAnalyzing] = useState(false);
+  const [savingAnswers, setSavingAnswers] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleAnalyze() {
+    setError(null);
+    setAnalyzing(true);
+    setDone(false);
+    const res = await analyzeRepo(repoUrl.trim(), repoToken.trim() || undefined);
+    if (!res.ok) {
+      setError(res.message);
+      setAnalyzing(false);
+      return;
+    }
+    setSummary(res.summary);
+    setQuestions(res.questions);
+    setAnswers(new Array(res.questions.length).fill(""));
+    setAnalyzing(false);
+  }
+
+  async function handleSaveAnswers() {
+    setError(null);
+    setSavingAnswers(true);
+    const ok = await saveOnboardingAnswers(
+      questions.map((q, i) => ({ question: q, answer: answers[i] ?? "" })),
+    );
+    setSavingAnswers(false);
+    if (!ok) {
+      setError("Could not save answers. Is the agent reachable?");
+      return;
+    }
+    setDone(true);
+  }
+
+  const allAnswered =
+    questions.length > 0 && answers.every((a) => a.trim().length > 0);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="font-serif text-2xl tracking-tight">
+          Tell Pincer about your project
+        </CardTitle>
+        <CardDescription>
+          Paste your GitHub repo. Pincer reads your README + a few source
+          files and asks you a handful of questions so drafted replies stay
+          on-brand.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <label className="flex flex-col gap-1">
+          <span className="text-sm font-medium">Repo URL</span>
+          <input
+            type="url"
+            value={repoUrl}
+            onChange={(e) => setRepoUrl(e.target.value)}
+            placeholder="https://github.com/your-handle/your-project"
+            disabled={analyzing || done}
+            className="rounded-lg border border-foreground/15 bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:border-foreground/40 disabled:opacity-60"
+          />
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-sm font-medium">
+            GitHub token{" "}
+            <span className="text-foreground/55 font-normal">(optional, private repos only)</span>
+          </span>
+          <input
+            type="password"
+            value={repoToken}
+            onChange={(e) => setRepoToken(e.target.value)}
+            placeholder="github_pat_..."
+            disabled={analyzing || done}
+            className="rounded-lg border border-foreground/15 bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:border-foreground/40 disabled:opacity-60"
+          />
+          <span className="text-xs text-foreground/55 leading-relaxed">
+            Used once to clone, never stored. Read-only `contents` scope is
+            enough.
+          </span>
+        </label>
+
+        <div className="flex items-center justify-between gap-3">
+          {error && (
+            <p className="text-xs text-red-700 dark:text-red-400 font-mono">
+              {error}
+            </p>
+          )}
+          {summary === null && (
+            <Button
+              onClick={handleAnalyze}
+              disabled={analyzing || repoUrl.trim().length === 0}
+              className="ml-auto"
+            >
+              {analyzing ? "Analyzing..." : "Analyze repo"}
+            </Button>
+          )}
+        </div>
+
+        {summary !== null && (
+          <div className="rounded-lg border border-foreground/10 bg-foreground/[0.02] p-3 flex flex-col gap-2">
+            <p className="text-xs uppercase tracking-wider text-foreground/55 font-mono">
+              What Pincer thinks your project does
+            </p>
+            <p className="text-sm leading-relaxed">{summary}</p>
+          </div>
+        )}
+
+        {questions.length > 0 && (
+          <div className="flex flex-col gap-4">
+            <p className="text-xs uppercase tracking-wider text-foreground/55 font-mono">
+              A few quick questions
+            </p>
+            {questions.map((q, i) => (
+              <label key={`${i}-${q.slice(0, 20)}`} className="flex flex-col gap-1">
+                <span className="text-sm">{q}</span>
+                <textarea
+                  value={answers[i] ?? ""}
+                  onChange={(e) => {
+                    const next = [...answers];
+                    next[i] = e.target.value;
+                    setAnswers(next);
+                  }}
+                  rows={2}
+                  disabled={savingAnswers || done}
+                  className="rounded-lg border border-foreground/15 bg-background px-3 py-2 text-sm focus:outline-none focus:border-foreground/40 resize-y disabled:opacity-60"
+                />
+              </label>
+            ))}
+
+            {!done && (
+              <div className="flex items-center justify-end">
+                <Button
+                  onClick={handleSaveAnswers}
+                  disabled={!allAnswered || savingAnswers}
+                >
+                  {savingAnswers ? "Saving..." : "Save and continue"}
+                </Button>
+              </div>
+            )}
+
+            {done && (
+              <p className="text-sm text-foreground/85">
+                Saved. Click Next below to pick the platforms Pincer should
+                launch on.
+              </p>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
