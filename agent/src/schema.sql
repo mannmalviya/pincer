@@ -1,0 +1,58 @@
+-- Pincer agent schema. Executed once at startup by db.ts via db.exec().
+--
+-- Tables:
+--   posts       — one row per registered Reddit/HN post we want to track.
+--   snapshots   — append-only time series of (score, comment_count) per post.
+--   comments    — every distinct comment we've seen on a watched post.
+--
+-- Design notes:
+--   * `external_id` is the platform's own ID (Reddit's "1abc23", HN's numeric
+--     item id). The (platform, external_id) UNIQUE constraint guarantees we
+--     never double-register the same post.
+--   * `watch_enabled` toggles whether the watch loop polls this post. Posts
+--     stay in the DB when paused so we keep the history visible in the UI.
+--   * `source` records how the row got here — useful for analytics and for
+--     the future "watch your old posts?" backfill question in onboarding.
+--   * Snapshot and comment children CASCADE on delete: removing a post takes
+--     its history with it. ON DELETE CASCADE requires PRAGMA foreign_keys=ON,
+--     which db.ts sets at connection time.
+--   * `posted_at`/`fetched_at` are unix epoch seconds (INTEGER). SQLite's
+--     `unixepoch()` is the default for fresh rows; the watch loop passes
+--     explicit timestamps when re-importing comment metadata.
+
+CREATE TABLE IF NOT EXISTS posts (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  platform      TEXT    NOT NULL CHECK (platform IN ('reddit','hn')),
+  external_id   TEXT    NOT NULL,
+  permalink     TEXT    NOT NULL,
+  title         TEXT,
+  body          TEXT,
+  author        TEXT,
+  posted_at     INTEGER,
+  watch_enabled INTEGER NOT NULL DEFAULT 1,
+  source        TEXT    NOT NULL DEFAULT 'manual'
+                          CHECK (source IN ('published','backfill','manual')),
+  created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE (platform, external_id)
+);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id       INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  fetched_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+  score         INTEGER NOT NULL,
+  comment_count INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_snap_post_time ON snapshots(post_id, fetched_at DESC);
+
+CREATE TABLE IF NOT EXISTS comments (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  external_id TEXT    NOT NULL,
+  author      TEXT,
+  body        TEXT,
+  posted_at   INTEGER,
+  fetched_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+  UNIQUE (post_id, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_comments_post_posted ON comments(post_id, posted_at DESC);

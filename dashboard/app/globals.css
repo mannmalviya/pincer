@@ -210,3 +210,57 @@
 .shine:hover::after {
   transform: translateX(110%);
 }
+
+/* ---------------------------------------------------------------------------
+ * Utility: continuous shimmer sweep for "loading text" affordances.
+ * Apply with `className="shimmer-text"`. The animation sweeps a brighter
+ * highlight across the text using background-clip, so the literal text
+ * remains selectable and accessibility tools see the real content.
+ *
+ * Implementation note: we resolve the gradient's color via an explicit
+ * CSS variable rather than currentColor, because the trick that makes
+ * background-clip:text work requires `color: transparent` — which would
+ * also make currentColor evaluate to transparent and erase the gradient.
+ * Override --shimmer-color inline to retint the sweep for other surfaces.
+ * ------------------------------------------------------------------------ */
+.shimmer-text {
+  --shimmer-color: var(--foreground);
+  /* The gradient starts and ends in the base shimmer color, with one
+     transparent highlight band at the midpoint. Because the endpoints
+     match, the gradient can tile seamlessly via repeat-x — there's no
+     visible seam where one tile meets the next, just a continuous base
+     color with the bright band sweeping through periodically. */
+  background-image: linear-gradient(
+    100deg,
+    var(--shimmer-color) 0%,
+    var(--shimmer-color) 40%,
+    color-mix(in srgb, var(--shimmer-color) 20%, transparent) 50%,
+    var(--shimmer-color) 60%,
+    var(--shimmer-color) 100%
+  );
+  background-size: 200% 100%;
+  /* repeat-x (not no-repeat) is the fix for the "text disappears
+     between sweeps" bug. With no-repeat, the animation positions the
+     background-image past the visible text area on the extremes, and
+     the transparent text fill leaves the text invisible until the
+     gradient slides back. Tiling guarantees paint over the text at
+     all times. */
+  background-repeat: repeat-x;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: pincer-shimmer 3s linear infinite;
+}
+
+@keyframes pincer-shimmer {
+  /* Travel exactly one tile width per loop so the seam (matching base
+     colors) lands at the same screen position each cycle — invisible,
+     and the bright band re-enters at a predictable cadence. */
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: 0% 0;
+  }
+}

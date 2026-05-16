@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
   loadSelectedPlatforms,
   PLATFORM_META,
@@ -15,6 +14,7 @@ import {
   PUBLISHABLE_PLATFORMS,
   type Platform,
 } from "@/lib/platforms";
+import { PostEditor } from "../_components/post-editor";
 import { SubredditCombobox } from "../_components/subreddit-combobox";
 import { ToastStack, type ToastItem } from "../_components/toast";
 
@@ -358,16 +358,19 @@ export default function NewPostPage() {
           </div>
         )}
 
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="post-body">Body</Label>
-          <Textarea
-            id="post-body"
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            placeholder="Write your post here. Markdown works on Reddit and HN."
-            className="min-h-[320px] font-mono text-sm leading-relaxed"
-          />
-        </div>
+        {/* LLM-assisted body editor: textarea on the left, chat panel on
+            the right. The chat talks to /api/llm/edit (Nemotron Super via
+            NIM). Proposed edits switch the left pane into a diff view
+            with per-hunk accept/reject. See post-editor.tsx for details. */}
+        <PostEditor
+          body={body}
+          onBodyChange={setBody}
+          title={title}
+          // Hint the model at tone: HN if HN-only or both, otherwise
+          // Reddit. The system prompt in /api/llm/edit uses this to
+          // bias word choice (no hype on HN, conversational on Reddit).
+          platform={targets.has("hn") && !targets.has("reddit") ? "hn" : "reddit"}
+        />
       </section>
 
       {/* Action bar. Publish on the right, per-platform results stack

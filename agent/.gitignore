@@ -1,0 +1,18 @@
+# Compiled output of `npm run build`. The agent ships from source via tsx on
+# dev and from dist/ in production; neither needs to be in version control.
+dist/
+
+# Local SQLite database files. WAL/SHM journal sidecars are SQLite's
+# concurrency mechanism, they should never be committed.
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Node.js artifacts.
+node_modules/
+npm-debug.log*
+
+# Local env (real values live here; .env.example is the template).
+.env
+.env.local
