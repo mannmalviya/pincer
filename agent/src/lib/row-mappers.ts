@@ -45,5 +45,7 @@ export function rowToComment(row: Record<string, unknown>): Comment {
     body: (row.body as string | null) ?? null,
     posted_at: (row.posted_at as number | null) ?? null,
     fetched_at: row.fetched_at as number,
+    score: (row.score as number | null) ?? null,
+    parent_external_id: (row.parent_external_id as string | null) ?? null,
   };
 }

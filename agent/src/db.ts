@@ -48,6 +48,23 @@ export function getDb(): Database.Database {
   const schemaSql = readFileSync(schemaPath, "utf-8");
   _db.exec(schemaSql);
 
+  // Lightweight in-place migrations for already-deployed DBs. SQLite has
+  // no "ADD COLUMN IF NOT EXISTS", so we check the live column set first
+  // and only ALTER when needed. Cheap and idempotent on every boot.
+  const commentCols = new Set(
+    (
+      _db.pragma("table_info(comments)") as Array<{ name: string }>
+    ).map((c) => c.name),
+  );
+  if (!commentCols.has("score")) {
+    _db.exec(`ALTER TABLE comments ADD COLUMN score INTEGER`);
+    log.info("migration: added comments.score");
+  }
+  if (!commentCols.has("parent_external_id")) {
+    _db.exec(`ALTER TABLE comments ADD COLUMN parent_external_id TEXT`);
+    log.info("migration: added comments.parent_external_id");
+  }
+
   return _db;
 }
 

@@ -25,16 +25,18 @@ export function registerCommentsRoute(app: FastifyInstance): void {
       // comments where posted_at didn't make it into the row.
       const rows = db
         .prepare(
-          `SELECT c.id            AS id,
-                  c.external_id   AS external_id,
-                  c.author        AS author,
-                  c.body          AS body,
-                  c.posted_at     AS posted_at,
-                  c.fetched_at    AS fetched_at,
-                  p.id            AS post_id,
-                  p.platform      AS platform,
-                  p.title         AS post_title,
-                  p.permalink     AS post_permalink
+          `SELECT c.id                  AS id,
+                  c.external_id         AS external_id,
+                  c.author              AS author,
+                  c.body                AS body,
+                  c.posted_at           AS posted_at,
+                  c.fetched_at          AS fetched_at,
+                  c.score               AS score,
+                  c.parent_external_id  AS parent_external_id,
+                  p.id                  AS post_id,
+                  p.platform            AS platform,
+                  p.title               AS post_title,
+                  p.permalink           AS post_permalink
              FROM comments c
              JOIN posts p ON p.id = c.post_id
             ORDER BY COALESCE(c.posted_at, c.fetched_at) DESC
@@ -49,6 +51,8 @@ export function registerCommentsRoute(app: FastifyInstance): void {
         body: (r.body as string | null) ?? null,
         posted_at: (r.posted_at as number | null) ?? null,
         fetched_at: r.fetched_at as number,
+        score: (r.score as number | null) ?? null,
+        parent_external_id: (r.parent_external_id as string | null) ?? null,
         post_id: r.post_id as number,
         platform: r.platform as "reddit" | "hn",
         post_title: (r.post_title as string | null) ?? null,

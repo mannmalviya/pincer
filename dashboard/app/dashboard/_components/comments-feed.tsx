@@ -121,7 +121,19 @@ function CommentRow({ comment }: { comment: AgentComment }) {
             >
               {comment.post_title ?? comment.post_permalink}
             </a>
-            <span className="ml-auto shrink-0 font-mono text-foreground/40">
+            {/* Per-comment score (Reddit only). HN comments have null
+                score so we just skip the badge for them. */}
+            {comment.score !== null && (
+              <span className="ml-auto shrink-0 font-mono text-foreground/55">
+                {comment.score > 0 ? `+${comment.score}` : comment.score}
+              </span>
+            )}
+            <span
+              className={
+                "shrink-0 font-mono text-foreground/40 " +
+                (comment.score === null ? "ml-auto" : "")
+              }
+            >
               {formatRelative(comment.posted_at ?? comment.fetched_at)}
             </span>
           </div>

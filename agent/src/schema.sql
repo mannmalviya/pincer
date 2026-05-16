@@ -46,13 +46,20 @@ CREATE TABLE IF NOT EXISTS snapshots (
 CREATE INDEX IF NOT EXISTS idx_snap_post_time ON snapshots(post_id, fetched_at DESC);
 
 CREATE TABLE IF NOT EXISTS comments (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  post_id     INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
-  external_id TEXT    NOT NULL,
-  author      TEXT,
-  body        TEXT,
-  posted_at   INTEGER,
-  fetched_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id             INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  external_id         TEXT    NOT NULL,
+  author              TEXT,
+  body                TEXT,
+  posted_at           INTEGER,
+  fetched_at          INTEGER NOT NULL DEFAULT (unixepoch()),
+  -- Per-comment score. Reddit returns a real value; HN doesn't surface it,
+  -- so HN rows always store NULL. Treat NULL as "unknown", not "zero".
+  score               INTEGER,
+  -- Parent comment's external_id. NULL when the comment is a top-level
+  -- reply to the post itself. Enables future threading reconstruction
+  -- without changing how we DFS-flatten on insert.
+  parent_external_id  TEXT,
   UNIQUE (post_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_comments_post_posted ON comments(post_id, posted_at DESC);

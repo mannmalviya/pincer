@@ -35,6 +35,7 @@ type RedditCommentData = {
   author?: string;
   body?: string;
   created_utc?: number;
+  score?: number;
   // `replies` is either an empty string "" when the comment has none, OR a
   // Listing object with its own children. Reddit's API is wonderfully
   // consistent like that.
@@ -78,15 +79,18 @@ export async function fetchRedditPost(externalId: string): Promise<FetchedPost> 
     posted_at: p.created_utc ?? null,
     score: p.score ?? 0,
     comment_count: p.num_comments ?? 0,
-    comments: flattenComments(commentsListing.data.children),
+    comments: flattenComments(commentsListing.data.children, null),
   };
 }
 
 // Walk the comment tree depth-first, returning every concrete t1 (comment)
 // node we encounter. Skips `kind: "more"` nodes (placeholders for unloaded
-// comment subtrees — fetching them requires a separate endpoint).
+// comment subtrees — fetching them requires a separate endpoint). The
+// `parentExternalId` argument threads through the recursion so each row
+// records which comment it replied to (NULL = top-level reply to the post).
 function flattenComments(
   children: Array<{ kind: string; data: RedditCommentData }>,
+  parentExternalId: string | null,
 ): FetchedComment[] {
   const out: FetchedComment[] = [];
   for (const child of children) {
@@ -97,11 +101,14 @@ function flattenComments(
       author: c.author ?? null,
       body: c.body ?? null,
       posted_at: c.created_utc ?? null,
+      score: c.score ?? null,
+      parent_external_id: parentExternalId,
     });
     // Recurse into replies if present. The "" form (no replies) short-
-    // circuits the recursion.
+    // circuits the recursion. Pass the current comment's id as the parent
+    // so each reply's row points back at it.
     if (c.replies && typeof c.replies === "object") {
-      out.push(...flattenComments(c.replies.data.children));
+      out.push(...flattenComments(c.replies.data.children, c.id));
     }
   }
   return out;

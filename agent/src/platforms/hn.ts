@@ -56,6 +56,10 @@ export async function fetchHnPost(externalId: string): Promise<FetchedPost> {
       author: k.by ?? null,
       body: k.text ?? null,
       posted_at: k.time ?? null,
+      // HN's item endpoint doesn't return per-comment karma; stays null.
+      score: null,
+      // Top-level kids of the story have no parent comment.
+      parent_external_id: null,
     });
   }
 

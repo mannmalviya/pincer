@@ -42,8 +42,9 @@ export async function tick(post: Post): Promise<TickResult> {
   // commit; this matters when a post suddenly gets 30+ new replies.
   const insertComment = db.prepare(
     `INSERT OR IGNORE INTO comments
-       (post_id, external_id, author, body, posted_at, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+       (post_id, external_id, author, body, posted_at, fetched_at,
+        score, parent_external_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertMany = db.transaction((rows: typeof data.comments) => {
     let inserted = 0;
@@ -55,6 +56,8 @@ export async function tick(post: Post): Promise<TickResult> {
         c.body,
         c.posted_at,
         now,
+        c.score,
+        c.parent_external_id,
       );
       // better-sqlite3's `changes` is 0 when INSERT OR IGNORE skipped the
       // row; 1 when it actually inserted. Summing gives us "new comments

@@ -42,6 +42,10 @@ export type Comment = {
   body: string | null;
   posted_at: number | null;
   fetched_at: number;
+  // Reddit returns a per-comment score; HN does not. NULL = unknown.
+  score: number | null;
+  // Parent comment's external_id; NULL for top-level replies to the post.
+  parent_external_id: string | null;
 };
 
 // The fetched-from-platform shape, before it lands in the DB. The watch
@@ -64,4 +68,6 @@ export type FetchedComment = {
   author: string | null;
   body: string | null;
   posted_at: number | null;
+  score: number | null;
+  parent_external_id: string | null;
 };

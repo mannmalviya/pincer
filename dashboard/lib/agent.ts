@@ -75,6 +75,10 @@ export type AgentComment = {
   body: string | null;
   posted_at: number | null;
   fetched_at: number;
+  // Reddit only — HN doesn't expose per-comment karma, so this is null
+  // for every HN row.
+  score: number | null;
+  parent_external_id: string | null;
   post_id: number;
   platform: "reddit" | "hn";
   post_title: string | null;

@@ -22,6 +22,9 @@ const BODY_SCHEMA = {
   properties: {
     platform: { type: "string", enum: ["reddit", "hn"] },
     username: { type: "string", minLength: 1, maxLength: 64 },
+    // Whether to enroll the discovered posts in the watch loop. Defaults
+    // to true; passing false records them as history without polling.
+    watch: { type: "boolean" },
   },
   additionalProperties: false,
 } as const;
@@ -67,11 +70,13 @@ async function discoverHnUrls(username: string): Promise<string[]> {
 }
 
 export function registerBackfillUserRoute(app: FastifyInstance): void {
-  app.post<{ Body: { platform: "reddit" | "hn"; username: string } }>(
+  app.post<{
+    Body: { platform: "reddit" | "hn"; username: string; watch?: boolean };
+  }>(
     "/backfill-user",
     { schema: { body: BODY_SCHEMA } },
     async (req, reply) => {
-      const { platform, username } = req.body;
+      const { platform, username, watch = true } = req.body;
 
       let urls: string[];
       try {
@@ -100,7 +105,7 @@ export function registerBackfillUserRoute(app: FastifyInstance): void {
       let duplicates = 0;
       const errors: Array<{ url: string; message: string }> = [];
       for (const url of urls) {
-        const r = await registerByUrl(url, "backfill", true);
+        const r = await registerByUrl(url, "backfill", watch);
         if (!r.ok) {
           errors.push({ url, message: r.message });
         } else if (r.duplicate) {

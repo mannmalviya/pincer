@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { FaBinoculars } from "react-icons/fa6";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -43,6 +44,12 @@ export function BackfillCard() {
   const [userSummaries, setUserSummaries] = useState<UserSummary[]>([]);
   const [userError, setUserError] = useState<string | null>(null);
 
+  // Whether discovered/pasted posts get enrolled in the agent's 60s watch
+  // loop. On = comments + score snapshots accrue over time. Off = the
+  // posts are registered as history without polling them again. Default
+  // on because that's the whole point of backfilling.
+  const [watchAll, setWatchAll] = useState(true);
+
   async function handleUserSubmit() {
     setUserSubmitting(true);
     setUserError(null);
@@ -59,7 +66,7 @@ export function BackfillCard() {
         const res = await fetch(`${AGENT_BASE}/backfill-user`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(t),
+          body: JSON.stringify({ ...t, watch: watchAll }),
         });
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as {
@@ -97,7 +104,7 @@ export function BackfillCard() {
         const res = await fetch(`${AGENT_BASE}/posts`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url, source: "backfill", watch: true }),
+          body: JSON.stringify({ url, source: "backfill", watch: watchAll }),
         });
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as {
@@ -143,6 +150,50 @@ export function BackfillCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-6">
+        {/* Shared watch toggle. Applies to every URL the user submits from
+            this card, whether by username or by URL. Default on because
+            backfilling without watching just records dead history. */}
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-foreground/10 bg-foreground/[0.02] px-3 py-2">
+          <div className="flex items-center gap-2">
+            <FaBinoculars
+              className={
+                "text-base " +
+                (watchAll ? "text-[color:var(--brand)]" : "text-foreground/40")
+              }
+              aria-hidden
+            />
+            <div className="flex flex-col">
+              <span className="text-sm font-medium">
+                Watch all backfilled posts
+              </span>
+              <span className="text-xs text-foreground/55">
+                {watchAll
+                  ? "Pincer will poll each post every 60s for new comments."
+                  : "Posts are recorded but not polled. You can toggle individually later."}
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setWatchAll((v) => !v)}
+            role="switch"
+            aria-checked={watchAll}
+            className={
+              "shrink-0 w-11 h-6 rounded-full border transition-colors relative " +
+              (watchAll
+                ? "bg-[color:var(--brand)] border-[color:var(--brand)]"
+                : "bg-foreground/10 border-foreground/15")
+            }
+          >
+            <span
+              className={
+                "absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform " +
+                (watchAll ? "translate-x-5" : "translate-x-0.5")
+              }
+            />
+          </button>
+        </div>
+
         {/* User mode: agent enumerates every public submission for the
             given username on each platform and registers them in bulk. */}
         <div className="flex flex-col gap-3">
