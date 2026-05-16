@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { FaBinoculars } from "react-icons/fa6";
 
 import { registerPost } from "@/lib/agent";
 import { Button } from "@/components/ui/button";
@@ -75,6 +76,12 @@ export default function NewPostPage() {
   // cold-start state separately from "Publishing...".
   const [bootingSidecar, setBootingSidecar] = useState(false);
   const [bootError, setBootError] = useState<string | null>(null);
+
+  // Whether the published URL should be enrolled in the agent's 60s watch
+  // loop. Defaults to on, since the usual reason to draft a post is to
+  // see what comes back. Off still registers the post (so it shows up in
+  // history and counts), but the agent skips it on subsequent ticks.
+  const [trackPost, setTrackPost] = useState(true);
 
   // Toast queue. Each successful per-platform publish pushes one; the
   // Toast component auto-dismisses itself after ~3s and then calls back
@@ -219,7 +226,11 @@ export default function NewPostPage() {
             // If NEXT_PUBLIC_AGENT_URL isn't set, this hits localhost:8000
             // which silently no-ops when no local agent is running.
             if (data.url) {
-              void registerPost({ url: data.url, source: "published" });
+              void registerPost({
+                url: data.url,
+                source: "published",
+                watch: trackPost,
+              });
             }
           }
         } catch (err) {
@@ -376,7 +387,28 @@ export default function NewPostPage() {
           underneath so the user gets immediate feedback as each request
           resolves. */}
       <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-end">
+        <div className="flex items-center justify-end gap-3">
+          {/* Track-this-post toggle. Binoculars = the agent's 60s watch
+              loop. On = enroll the published URL; off = post and forget. */}
+          <button
+            type="button"
+            onClick={() => setTrackPost((v) => !v)}
+            aria-pressed={trackPost}
+            title={
+              trackPost
+                ? "Pincer will watch this post for comments"
+                : "Tracking off, Pincer will not watch this post"
+            }
+            className={
+              "h-10 px-3 inline-flex items-center gap-2 rounded-full border text-sm transition-colors " +
+              (trackPost
+                ? "border-[color:var(--brand)] bg-[color:var(--brand)]/10 text-foreground"
+                : "border-foreground/15 bg-transparent text-foreground/55 hover:text-foreground hover:border-foreground/30")
+            }
+          >
+            <FaBinoculars className="text-base" aria-hidden />
+            <span>{trackPost ? "Tracking on" : "Track this post"}</span>
+          </button>
           <Button onClick={handlePublish} disabled={!canPublish}>
             {bootingSidecar
               ? "Starting sidecar..."

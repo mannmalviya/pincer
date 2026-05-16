@@ -15,7 +15,7 @@ import { fetchComments, type AgentComment } from "@/lib/agent";
 // already deduped at the agent (UNIQUE post_id, external_id), so the
 // dashboard just re-renders whatever the latest fetch returned.
 const POLL_INTERVAL_MS = 30_000;
-const FEED_LIMIT = 50;
+const FEED_LIMIT = 4;
 
 export function CommentsFeed() {
   const [comments, setComments] = useState<AgentComment[] | null>(null);

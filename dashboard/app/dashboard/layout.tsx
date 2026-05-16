@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { FaGear } from "react-icons/fa6";
 
 import { PincerMark } from "@/components/site/pincer-mark";
 
@@ -38,6 +39,16 @@ export default function DashboardLayout({
             <NavLink href="/dashboard/newpost">New Post</NavLink>
             <NavLink href="/dashboard/inbox">Inbox</NavLink>
             <NavLink href="/dashboard/analytics">Analytics</NavLink>
+            {/* Settings, gear-only icon. Keeps the main nav focused on the
+                daily loop and tucks config (backfill, future toggles) one
+                click away. */}
+            <Link
+              href="/dashboard/settings"
+              aria-label="Settings"
+              className="ml-1 w-10 h-10 flex items-center justify-center rounded-full text-foreground/60 hover:text-foreground hover:bg-foreground/5 transition-colors"
+            >
+              <FaGear className="text-base" aria-hidden />
+            </Link>
           </nav>
         </div>
       </header>

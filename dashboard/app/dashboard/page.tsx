@@ -1,7 +1,6 @@
 import Link from "next/link";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { BackfillCard } from "./_components/backfill-card";
 import { CommentsFeed } from "./_components/comments-feed";
 import { OverviewStats } from "./_components/overview-stats";
 
@@ -68,12 +67,6 @@ export default function DashboardOverview() {
             body="Upvotes, views, and comment velocity across every platform you've posted on."
           />
         </div>
-      </section>
-
-      {/* Backfill, always-available form to add existing Reddit/HN posts
-          to the agent's watch list without re-running onboarding. */}
-      <section>
-        <BackfillCard />
       </section>
     </div>
   );
