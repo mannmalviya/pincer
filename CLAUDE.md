@@ -29,9 +29,10 @@ Pincer is a 24-hour NVIDIA hackathon project — an autonomous multi-platform la
 
 ### Platform integrations
 
-- snoowrap — Reddit submit + comment polling
-- discord.js — Discord send + comment polling
-- hn.algolia.com — Hacker News read-only (analytics only; posting deferred to v1)
+All platform interactions go through a Python sidecar wrapping [browser-harness](https://github.com/browser-use/browser-harness), which drives a real Chrome via CDP. No per-platform API libraries (no snoowrap, no discord.js, no Twitter SDK). Per-platform behavior lives in `agent/src/platforms/<name>.ts` as task strings handed to the sidecar.
+
+- browser-harness (Python) — single mechanism for Reddit / X / Discord / Instagram / TikTok / HN
+- Browser Use Cloud (optional) — hosted stealth browsers + captcha solving on the free tier
 
 ### Deployment & sandbox
 
@@ -40,12 +41,13 @@ Pincer is a 24-hour NVIDIA hackathon project — an autonomous multi-platform la
 
 ## Architecture
 
-Two long-running processes share one SQLite file:
+Split deployment with three processes:
 
-- **OpenClaw agent** (Node.js) — owns the loop. Drafts posts via Nemotron Super, posts to Reddit/Discord, polls comments every 60s, classifies them via Nemotron Nano, writes escalations.
-- **Next.js dashboard** — owns the UI. Onboarding wizard, compose/approve flow, escalation inbox, analytics.
+- **Next.js dashboard** (runs on the user's laptop) — owns the UI. Onboarding wizard, compose/approve flow, escalation inbox, analytics. Stateless; reads everything from the agent over HTTP.
+- **OpenClaw agent** (Node.js, runs on Brev) — owns the loop and the SQLite DB. Drafts posts via Nemotron Super, orchestrates the browser via the sidecar, polls comments every 60s, classifies them via Nemotron Nano, writes escalations.
+- **Browser sidecar** (Python + browser-harness, runs on Brev next to the agent) — drives a real Chrome via CDP. Receives natural-language tasks from the agent ("post this to r/test", "fetch comments on t3_abc") and returns structured results + updated session cookies.
 
-Both processes are wrapped by NemoClaw with an egress allowlist (`api.reddit.com`, `discord.com`, `hn.algolia.com`, `integrate.api.nvidia.com`). SQLite was chosen over Postgres because a 24-hour single-host demo has no concurrency concerns and the single-file backup is trivial. NIM was chosen over local Ollama because the hackathon is the Cloud track and NIM removes the "did the model load" failure mode from the demo.
+The agent + sidecar are wrapped by NemoClaw with an egress allowlist (platform domains + `integrate.api.nvidia.com` + optionally `cloud.browser-use.com`). SQLite was chosen over Postgres because a single-host single-writer demo has no concurrency concerns and the single-file backup is trivial. NIM was chosen over local Ollama because the hackathon is the Cloud track and NIM removes the "did the model load" failure mode from the demo. browser-harness was chosen over per-platform API libraries because it gives one uniform mechanism for every platform (Reddit, X, Instagram, TikTok, HN), most of which gate their APIs behind business approval or have no API at all.
 
 See [PLAN.md](PLAN.md) for the full architecture diagram, database schema, skill list, and 24-hour schedule.
 

@@ -1,6 +1,8 @@
 import Link from "next/link";
 
 import { PincerMark } from "@/components/site/pincer-mark";
+import { FeaturesShowcase } from "@/components/site/features-showcase";
+import { PlatformMarquee } from "@/components/site/platform-marquee";
 
 // ---------------------------------------------------------------------------
 // Landing page — Pincer marketing surface.
@@ -47,29 +49,15 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* What you get */}
-      <section className="border-t border-foreground/10 px-6 py-20">
-        <div className="max-w-5xl mx-auto">
-          <h2 className="font-sans text-sm uppercase tracking-wider text-foreground/50 text-center mb-12">
-            What you get
-          </h2>
+      {/* Trust-bar marquee — sits right under the hero (conventional
+          landing-page rhythm) and reinforces the "we post everywhere you
+          live" claim before the user reads any feature copy. */}
+      <PlatformMarquee />
 
-          <div className="grid gap-10 sm:grid-cols-3">
-            <Feature
-              title="Tailored drafts"
-              body="One product brief in, three platform-aware drafts out. Reddit gets problem-first; Discord gets casual; HN gets a blunt title."
-            />
-            <Feature
-              title="Comment triage"
-              body="The agent polls every 60 seconds, classifies new comments, and routes the hard ones to your inbox with a suggested reply already drafted."
-            />
-            <Feature
-              title="Live analytics"
-              body="Upvotes, views, and comment velocity per platform — all in one chart, all from a single SQLite file you own."
-            />
-          </div>
-        </div>
-      </section>
+      {/* What Pincer does — animated client island; section chrome
+          (border-t, padding, centered heading) lives inside the component
+          to keep the landing page's vertical rhythm consistent. */}
+      <FeaturesShowcase />
 
       {/* How it works */}
       <section className="border-t border-foreground/10 px-6 py-20">
@@ -123,16 +111,6 @@ export default function Landing() {
         </div>
       </footer>
     </main>
-  );
-}
-
-// Small presentational helpers — kept inline so the file stays self-contained.
-function Feature({ title, body }: { title: string; body: string }) {
-  return (
-    <div className="flex flex-col gap-2">
-      <h3 className="font-semibold tracking-tight">{title}</h3>
-      <p className="text-sm text-foreground/65 leading-relaxed">{body}</p>
-    </div>
   );
 }
 

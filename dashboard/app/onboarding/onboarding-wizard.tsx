@@ -211,6 +211,27 @@ function platformValid<P extends Platform>(
   }
 }
 
+// ---------------------------------------------------------------------------
+// PlatformCardTitle — shared title row for the per-platform credential steps.
+// Renders the platform's brand glyph (in its official colour) next to the
+// step's heading, so each step instantly reads as e.g. "🔴 Reddit" instead of
+// a bare wordmark. Centralised here so all six steps stay visually identical.
+// ---------------------------------------------------------------------------
+function PlatformCardTitle({ platform }: { platform: Platform }) {
+  const meta = PLATFORM_META[platform];
+  const Icon = meta.icon;
+  return (
+    <CardTitle className="font-serif text-2xl tracking-tight flex items-center gap-3">
+      <Icon
+        className="shrink-0 text-2xl"
+        style={{ color: meta.color }}
+        aria-hidden
+      />
+      {meta.label}
+    </CardTitle>
+  );
+}
+
 export function OnboardingWizard() {
   const router = useRouter();
 
@@ -506,9 +527,7 @@ function RedditStep({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="font-serif text-2xl tracking-tight">
-          Reddit
-        </CardTitle>
+        <PlatformCardTitle platform="reddit" />
         <CardDescription>
           Create a <span className="font-mono">script</span>-type app at{" "}
           <a
@@ -593,9 +612,7 @@ function HackerNewsStep({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="font-serif text-2xl tracking-tight">
-          Hacker News
-        </CardTitle>
+        <PlatformCardTitle platform="hn" />
         <CardDescription>
           HN has no official write API in v0 — Pincer reads upvotes and
           comment counts via Algolia. Posting plugs in later via Browser
@@ -635,9 +652,7 @@ function DiscordStep({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="font-serif text-2xl tracking-tight">
-          Discord
-        </CardTitle>
+        <PlatformCardTitle platform="discord" />
         <CardDescription>
           Create a bot at{" "}
           <a
@@ -695,9 +710,7 @@ function XStep({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="font-serif text-2xl tracking-tight">
-          X
-        </CardTitle>
+        <PlatformCardTitle platform="x" />
         <CardDescription>
           Create a v2 app at{" "}
           <a
@@ -753,9 +766,7 @@ function InstagramStep({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="font-serif text-2xl tracking-tight">
-          Instagram
-        </CardTitle>
+        <PlatformCardTitle platform="instagram" />
         <CardDescription>
           Posting requires an Instagram Business account linked to a
           Facebook Page, then a long-lived access token from the Meta Graph
@@ -796,9 +807,7 @@ function TikTokStep({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="font-serif text-2xl tracking-tight">
-          TikTok
-        </CardTitle>
+        <PlatformCardTitle platform="tiktok" />
         <CardDescription>
           Register a Content Posting API app at{" "}
           <a

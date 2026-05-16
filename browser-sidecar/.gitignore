@@ -1,0 +1,10 @@
+# Python virtual environment — managed locally by uv, not committed.
+.venv/
+
+# Byte-compiled artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# uv / pip caches
+.uv-cache/

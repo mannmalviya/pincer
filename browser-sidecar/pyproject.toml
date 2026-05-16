@@ -1,0 +1,10 @@
+[project]
+name = "browser-sidecar"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "browser-use>=0.12.6",
+    "fastapi>=0.136.1",
+    "uvicorn[standard]>=0.47.0",
+]
