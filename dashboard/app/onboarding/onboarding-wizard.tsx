@@ -12,6 +12,9 @@ import {
   AGENT_BASE,
   analyzeRepo,
   saveOnboardingAnswers,
+  type ProjectAnswer,
+  type ProjectDocumentation,
+  type ProjectQuestion,
 } from "@/lib/agent";
 import {
   PLATFORM_META,
@@ -65,17 +68,21 @@ export function OnboardingWizard() {
   const [backfillUrls, setBackfillUrls] = useState("");
 
   // Project step state. The repo URL + optional PAT go to /onboarding/analyze;
-  // the agent clones, summarizes, and returns 4-6 questions. The user fills
-  // them in; on Next we POST to /onboarding/answers. Marked done once the
-  // agent has accepted the answers — until then we don't advance.
+  // the agent clones, generates structured documentation + a typed
+  // questionnaire, and the user answers it. Marked done once /onboarding/answers
+  // returns ok. Until then we don't advance.
   const [repoUrl, setRepoUrl] = useState("");
   const [repoToken, setRepoToken] = useState("");
-  const [projectSummary, setProjectSummary] = useState<string | null>(null);
-  const [projectQuestions, setProjectQuestions] = useState<string[]>([]);
-  const [projectAnswers, setProjectAnswers] = useState<string[]>([]);
+  const [projectDoc, setProjectDoc] = useState<ProjectDocumentation | null>(
+    null,
+  );
+  const [projectQuestions, setProjectQuestions] = useState<ProjectQuestion[]>(
+    [],
+  );
+  const [projectAnswers, setProjectAnswers] = useState<ProjectAnswer[]>([]);
   const [projectDone, setProjectDone] = useState(false);
 
-  const steps: Array<"project" | "project" | "select" | "browser-login" | "backfill"> = [
+  const steps: Array<"project" | "select" | "browser-login" | "backfill"> = [
     "project",
     ...(projectDone ? (["select"] as const) : []),
     ...(projectDone && selected.length > 0
@@ -157,8 +164,8 @@ export function OnboardingWizard() {
           setRepoUrl={setRepoUrl}
           repoToken={repoToken}
           setRepoToken={setRepoToken}
-          summary={projectSummary}
-          setSummary={setProjectSummary}
+          documentation={projectDoc}
+          setDocumentation={setProjectDoc}
           questions={projectQuestions}
           setQuestions={setProjectQuestions}
           answers={projectAnswers}
@@ -742,19 +749,20 @@ function BackfillStep({
 // Step 0 (new first step) — project analysis.
 //
 // User pastes a GitHub repo URL (optionally with a PAT for private repos).
-// The agent clones, samples README + key source files, and asks Nemotron
-// to produce a one-sentence project summary plus 4-6 clarifying questions.
-// The user answers those questions; on submit we POST to /onboarding/answers
-// and unlock the rest of the wizard. The reply route later reads the
-// summary + Q/A back into the LLM prompt so drafted replies stay grounded.
+// The agent clones, samples README + source, and asks Nemotron for two
+// things: (1) a structured ProjectDocumentation block, and (2) a typed
+// questionnaire of 4-6 MCQ + free-text questions. We render the doc as a
+// preview and the questions in Claude-Code-style cards. Submitting POSTs
+// the typed answers to /onboarding/answers; only then does the wizard
+// advance to platform select.
 // ---------------------------------------------------------------------------
 function ProjectStep({
   repoUrl,
   setRepoUrl,
   repoToken,
   setRepoToken,
-  summary,
-  setSummary,
+  documentation,
+  setDocumentation,
   questions,
   setQuestions,
   answers,
@@ -766,12 +774,12 @@ function ProjectStep({
   setRepoUrl: (v: string) => void;
   repoToken: string;
   setRepoToken: (v: string) => void;
-  summary: string | null;
-  setSummary: (v: string | null) => void;
-  questions: string[];
-  setQuestions: (v: string[]) => void;
-  answers: string[];
-  setAnswers: (v: string[]) => void;
+  documentation: ProjectDocumentation | null;
+  setDocumentation: (v: ProjectDocumentation | null) => void;
+  questions: ProjectQuestion[];
+  setQuestions: (v: ProjectQuestion[]) => void;
+  answers: ProjectAnswer[];
+  setAnswers: (v: ProjectAnswer[]) => void;
   done: boolean;
   setDone: (v: boolean) => void;
 }) {
@@ -789,18 +797,16 @@ function ProjectStep({
       setAnalyzing(false);
       return;
     }
-    setSummary(res.summary);
+    setDocumentation(res.documentation);
     setQuestions(res.questions);
-    setAnswers(new Array(res.questions.length).fill(""));
+    setAnswers(res.questions.map((q) => ({ id: q.id, answer: "" })));
     setAnalyzing(false);
   }
 
   async function handleSaveAnswers() {
     setError(null);
     setSavingAnswers(true);
-    const ok = await saveOnboardingAnswers(
-      questions.map((q, i) => ({ question: q, answer: answers[i] ?? "" })),
-    );
+    const ok = await saveOnboardingAnswers(answers);
     setSavingAnswers(false);
     if (!ok) {
       setError("Could not save answers. Is the agent reachable?");
@@ -809,8 +815,21 @@ function ProjectStep({
     setDone(true);
   }
 
+  // Look up the answer for a given question id, returning "" if not yet
+  // captured. Lets the render loop be a simple `value={answerFor(q.id)}`.
+  const answerFor = (id: string): string =>
+    answers.find((a) => a.id === id)?.answer ?? "";
+
+  function setAnswerFor(id: string, value: string) {
+    const next = answers.some((a) => a.id === id)
+      ? answers.map((a) => (a.id === id ? { ...a, answer: value } : a))
+      : [...answers, { id, answer: value }];
+    setAnswers(next);
+  }
+
   const allAnswered =
-    questions.length > 0 && answers.every((a) => a.trim().length > 0);
+    questions.length > 0 &&
+    questions.every((q) => answerFor(q.id).trim().length > 0);
 
   return (
     <Card>
@@ -819,12 +838,12 @@ function ProjectStep({
           Tell Pincer about your project
         </CardTitle>
         <CardDescription>
-          Paste your GitHub repo. Pincer reads your README + a few source
-          files and asks you a handful of questions so drafted replies stay
-          on-brand.
+          Paste your GitHub repo. Pincer reads your README and source, builds
+          its own documentation, then asks a few questions so drafted replies
+          sound like you.
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+      <CardContent className="flex flex-col gap-5">
         <label className="flex flex-col gap-1">
           <span className="text-sm font-medium">Repo URL</span>
           <input
@@ -862,7 +881,7 @@ function ProjectStep({
               {error}
             </p>
           )}
-          {summary === null && (
+          {documentation === null && (
             <Button
               onClick={handleAnalyze}
               disabled={analyzing || repoUrl.trim().length === 0}
@@ -873,57 +892,188 @@ function ProjectStep({
           )}
         </div>
 
-        {summary !== null && (
-          <div className="rounded-lg border border-foreground/10 bg-foreground/[0.02] p-3 flex flex-col gap-2">
-            <p className="text-xs uppercase tracking-wider text-foreground/55 font-mono">
-              What Pincer thinks your project does
-            </p>
-            <p className="text-sm leading-relaxed">{summary}</p>
-          </div>
+        {documentation !== null && (
+          <DocumentationPreview doc={documentation} />
         )}
 
+        {/* Questions block: only renders when the LLM actually returned
+            questions. When it decides it has enough signal and asks none,
+            we skip straight to a "Looks good" continue button below. */}
         {questions.length > 0 && (
           <div className="flex flex-col gap-4">
             <p className="text-xs uppercase tracking-wider text-foreground/55 font-mono">
               A few quick questions
             </p>
-            {questions.map((q, i) => (
-              <label key={`${i}-${q.slice(0, 20)}`} className="flex flex-col gap-1">
-                <span className="text-sm">{q}</span>
-                <textarea
-                  value={answers[i] ?? ""}
-                  onChange={(e) => {
-                    const next = [...answers];
-                    next[i] = e.target.value;
-                    setAnswers(next);
-                  }}
-                  rows={2}
-                  disabled={savingAnswers || done}
-                  className="rounded-lg border border-foreground/15 bg-background px-3 py-2 text-sm focus:outline-none focus:border-foreground/40 resize-y disabled:opacity-60"
-                />
-              </label>
+            {questions.map((q) => (
+              <QuestionCard
+                key={q.id}
+                question={q}
+                value={answerFor(q.id)}
+                onChange={(v) => setAnswerFor(q.id, v)}
+                disabled={savingAnswers || done}
+              />
             ))}
-
-            {!done && (
-              <div className="flex items-center justify-end">
-                <Button
-                  onClick={handleSaveAnswers}
-                  disabled={!allAnswered || savingAnswers}
-                >
-                  {savingAnswers ? "Saving..." : "Save and continue"}
-                </Button>
-              </div>
-            )}
-
-            {done && (
-              <p className="text-sm text-foreground/85">
-                Saved. Click Next below to pick the platforms Pincer should
-                launch on.
-              </p>
-            )}
           </div>
+        )}
+
+        {documentation !== null && !done && (
+          <div className="flex items-center justify-end">
+            <Button
+              onClick={handleSaveAnswers}
+              disabled={
+                savingAnswers ||
+                (questions.length > 0 && !allAnswered)
+              }
+            >
+              {savingAnswers
+                ? "Saving..."
+                : questions.length === 0
+                  ? "Looks good, continue"
+                  : "Save and continue"}
+            </Button>
+          </div>
+        )}
+
+        {done && (
+          <p className="text-sm text-foreground/85">
+            Saved. Click Next below to pick the platforms Pincer should
+            launch on.
+          </p>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// Renders the agent's structured project documentation back to the user as
+// a confirmation surface. Title bar, summary, then any sections that have
+// content. Empty arrays are hidden so we don't render dead labels.
+function DocumentationPreview({ doc }: { doc: ProjectDocumentation }) {
+  return (
+    <div className="rounded-lg border border-foreground/10 bg-foreground/[0.04] p-4 flex flex-col gap-3">
+      <p className="text-xs uppercase tracking-wider text-foreground/55 font-mono">
+        What Pincer learned
+      </p>
+      {doc.summary && (
+        <p className="text-sm leading-relaxed text-foreground/90">
+          {doc.summary}
+        </p>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+        {doc.key_features.length > 0 && (
+          <PreviewBlock
+            label="Key features"
+            items={doc.key_features}
+          />
+        )}
+        {doc.tech_stack.length > 0 && (
+          <PreviewBlock label="Tech stack" items={doc.tech_stack} />
+        )}
+        {doc.target_audience && (
+          <PreviewLine label="Audience" text={doc.target_audience} />
+        )}
+        {doc.voice_guidance && (
+          <PreviewLine label="Voice" text={doc.voice_guidance} />
+        )}
+        {doc.things_to_avoid.length > 0 && (
+          <PreviewBlock
+            label="Never claim"
+            items={doc.things_to_avoid}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PreviewBlock({ label, items }: { label: string; items: string[] }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-foreground/55 uppercase tracking-wider">{label}</span>
+      <ul className="flex flex-col gap-0.5">
+        {items.map((item, i) => (
+          <li key={`${label}-${i}`} className="text-foreground/85 leading-relaxed">
+            {item}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function PreviewLine({ label, text }: { label: string; text: string }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-foreground/55 uppercase tracking-wider">{label}</span>
+      <p className="text-foreground/85 leading-relaxed">{text}</p>
+    </div>
+  );
+}
+
+// One question's UI. MCQ renders as a vertical list of clickable cards
+// (label + optional description); the selected one gets a brand-tinted
+// border. text renders as a free-form textarea. Both share the question
+// label header so the visual rhythm is consistent.
+function QuestionCard({
+  question,
+  value,
+  onChange,
+  disabled,
+}: {
+  question: ProjectQuestion;
+  value: string;
+  onChange: (v: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-sm font-medium text-foreground/90">
+        {question.text}
+      </span>
+      {question.type === "mcq" ? (
+        <ul className="flex flex-col gap-2">
+          {question.options.map((opt) => {
+            const selected = value === opt.label;
+            return (
+              <li key={opt.label}>
+                <button
+                  type="button"
+                  onClick={() => !disabled && onChange(opt.label)}
+                  disabled={disabled}
+                  className={
+                    "w-full text-left p-3 rounded-lg border transition-colors disabled:opacity-60 " +
+                    (selected
+                      ? "border-[color:var(--brand)] bg-[color:var(--brand)]/5"
+                      : "border-foreground/10 hover:border-foreground/30 hover:bg-foreground/5")
+                  }
+                >
+                  <span
+                    className={
+                      "block text-sm font-medium " +
+                      (selected ? "text-foreground" : "text-foreground/85")
+                    }
+                  >
+                    {opt.label}
+                  </span>
+                  {opt.description && (
+                    <span className="block text-xs text-foreground/55 mt-1 leading-relaxed">
+                      {opt.description}
+                    </span>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={2}
+          disabled={disabled}
+          className="rounded-lg border border-foreground/15 bg-background px-3 py-2 text-sm focus:outline-none focus:border-foreground/40 resize-y disabled:opacity-60"
+        />
+      )}
+    </div>
   );
 }

@@ -25,10 +25,17 @@ import { join, resolve } from "node:path";
 
 import type { FastifyInstance } from "fastify";
 
-import { NIM_REPLY_MODEL } from "../config.js";
 import { log } from "../lib/log.js";
-import { chatComplete, NimError, nimConfigured } from "../lib/nim.js";
-import { getProjectContext, setProjectContext } from "../lib/project-context.js";
+import { NimError, nimConfigured } from "../lib/nim.js";
+import { orchestratedChatComplete } from "../lib/orchestrate.js";
+import {
+  getProjectContext,
+  setProjectContext,
+  type ProjectAnswer,
+  type ProjectDocumentation,
+  type ProjectQuestion,
+  type ProjectQuestionOption,
+} from "../lib/project-context.js";
 
 const ANALYZE_BODY = {
   type: "object",
@@ -48,9 +55,9 @@ const ANSWERS_BODY = {
       type: "array",
       items: {
         type: "object",
-        required: ["question", "answer"],
+        required: ["id", "answer"],
         properties: {
-          question: { type: "string", minLength: 1, maxLength: 500 },
+          id: { type: "string", minLength: 1, maxLength: 100 },
           answer: { type: "string", maxLength: 4000 },
         },
         additionalProperties: false,
@@ -223,33 +230,78 @@ async function readRepoSnapshot(root: string): Promise<string> {
 }
 
 type AnalyzeResponse = {
-  summary: string;
-  questions: string[];
+  documentation: ProjectDocumentation;
+  questions: ProjectQuestion[];
 };
 
-// Strict-ish JSON extraction. Nemotron sometimes wraps JSON in prose or
-// markdown code fences; pull the first {...} block we can find and parse
-// it. If parsing fails, fall back to a single best-effort summary with
-// no questions.
-function parseAnalyzeResponse(text: string): AnalyzeResponse {
+// Hard parse Nemotron's JSON output. Nemotron Super tends to wrap JSON in
+// prose or code fences; we pull the first {...} block and validate it.
+// Returns null on any parse / shape failure so the caller can decide
+// whether to surface a partial result.
+function parseAnalyzeResponse(text: string): AnalyzeResponse | null {
   const match = text.match(/\{[\s\S]*\}/);
-  if (match) {
-    try {
-      const parsed = JSON.parse(match[0]);
-      const summary =
-        typeof parsed.summary === "string" ? parsed.summary.trim() : "";
-      const questions = Array.isArray(parsed.questions)
-        ? parsed.questions
-            .filter((q: unknown): q is string => typeof q === "string")
-            .map((q: string) => q.trim())
-            .filter((q: string) => q.length > 0)
-        : [];
-      if (summary || questions.length > 0) return { summary, questions };
-    } catch {
-      // fall through to fallback
+  if (!match) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(match[0]);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const o = parsed as Record<string, unknown>;
+  // `documentation` is required but its inner fields are optional — the
+  // prompt tells Nemotron to omit fields it has no signal for. We coerce
+  // each one defensively so a missing key reads as empty rather than
+  // throwing the whole response away.
+  const d = (o.documentation as Record<string, unknown> | undefined) ?? {};
+  if (typeof d !== "object" || d === null) return null;
+
+  const stringArray = (v: unknown): string[] =>
+    Array.isArray(v)
+      ? v.filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+      : [];
+
+  const documentation: ProjectDocumentation = {
+    summary: typeof d.summary === "string" ? d.summary.trim() : "",
+    key_features: stringArray(d.key_features),
+    tech_stack: stringArray(d.tech_stack),
+    target_audience:
+      typeof d.target_audience === "string" ? d.target_audience.trim() : "",
+    voice_guidance:
+      typeof d.voice_guidance === "string" ? d.voice_guidance.trim() : "",
+    things_to_avoid: stringArray(d.things_to_avoid),
+  };
+
+  const questionsRaw = Array.isArray(o.questions) ? o.questions : [];
+  const questions: ProjectQuestion[] = [];
+  for (const q of questionsRaw) {
+    if (typeof q !== "object" || q === null) continue;
+    const qo = q as Record<string, unknown>;
+    const id = typeof qo.id === "string" ? qo.id : null;
+    const text = typeof qo.text === "string" ? qo.text.trim() : null;
+    if (!id || !text) continue;
+    if (qo.type === "mcq" && Array.isArray(qo.options)) {
+      const options: ProjectQuestionOption[] = [];
+      for (const opt of qo.options) {
+        if (typeof opt !== "object" || opt === null) continue;
+        const oo = opt as Record<string, unknown>;
+        if (typeof oo.label !== "string" || !oo.label.trim()) continue;
+        options.push({
+          label: oo.label.trim(),
+          description:
+            typeof oo.description === "string" ? oo.description.trim() : undefined,
+        });
+      }
+      if (options.length >= 2) {
+        questions.push({ id, type: "mcq", text, options });
+      }
+    } else if (qo.type === "text") {
+      questions.push({ id, type: "text", text });
     }
   }
-  return { summary: text.slice(0, 500), questions: [] };
+
+  if (!documentation.summary && questions.length === 0) return null;
+  return { documentation, questions };
 }
 
 export function registerOnboardingRoutes(app: FastifyInstance): void {
@@ -294,17 +346,39 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
 
         const system = [
           "You are analyzing a software project to help its creator market it.",
-          "Read the supplied excerpts and produce two outputs as JSON.",
-          "1. summary: a single one-to-two sentence description of what the project does and who it's for.",
-          "2. questions: 4 to 6 short clarifying questions that, if answered, would let you draft on-brand replies on Reddit / Hacker News.",
-          "Questions should focus on: target audience, key differentiators, what NOT to claim, tone of voice, technical depth to assume.",
-          "Return strictly valid JSON, no prose. Example: {\"summary\":\"...\",\"questions\":[\"...\",\"...\"]}",
-        ].join(" ");
+          "Read the supplied repo excerpts and return STRICTLY VALID JSON with two top-level keys: `documentation` and `questions`.",
+          "",
+          "`documentation` is an object describing what you learned. Include the keys that make sense for this project. Strongly preferred keys:",
+          " - summary: short prose, what the project does and who it's for. Plain language, no marketing speak.",
+          " - key_features: array of short feature strings.",
+          " - tech_stack: array naming languages, frameworks, and key infra you saw.",
+          " - target_audience: one sentence on who this is for.",
+          " - voice_guidance: one sentence on the tone the assistant should use, inferred from the README's voice.",
+          " - things_to_avoid: array of claims or framings the assistant should NOT make. Empty array is fine if nothing comes to mind.",
+          "Omit any field where you genuinely have no signal; never invent.",
+          "",
+          "`questions` is an array of clarifying questions targeting things the repo doesn't tell you. Ask as many or as few as you need to feel confident drafting on-brand replies, ranging from zero (you're already confident) up to roughly a dozen (codebase is opaque, audience unclear).",
+          "Each question is an object: { id, type, text, options? }",
+          " - `id` is a short stable slug like 'audience' or 'tone'. Unique within the array.",
+          " - `type` is either 'mcq' (single-choice with labeled options) or 'text' (free-form).",
+          " - `text` is the question shown to the user.",
+          " - `options` is required when type is 'mcq'. Each option is { label: short choice, description: one-sentence explainer }. Provide enough options to cover the realistic answers, typically 2-5.",
+          "Mix question types as you see fit. Prefer 'mcq' when you can enumerate likely answers because users answer those faster.",
+          "",
+          "Good question targets: target audience boundaries, what NOT to claim, the single feature to lead with, technical depth to assume, voice on different platforms, who the project is meant to compete with.",
+          "Avoid asking about pricing, business model, or roadmap unless the README or code already hints at them.",
+          "",
+          "Return ONLY the JSON object. No prose before or after, no markdown code fences.",
+        ].join("\n");
 
         let modelText: string;
         try {
-          modelText = await chatComplete({
-            model: NIM_REPLY_MODEL,
+          // Force primary tier here — analyzing a whole codebase + writing
+          // a structured doc + designing a questionnaire is firmly in the
+          // "needs the strong model" bucket; no need to spend the router
+          // round-trip to learn that.
+          const result = await orchestratedChatComplete({
+            task: "analyze a software project and produce structured documentation + clarifying questions",
             messages: [
               { role: "system", content: system },
               {
@@ -314,7 +388,9 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
             ],
             temperature: 0.3,
             max_tokens: 800,
+            forceTier: "primary",
           });
+          modelText = result.text;
         } catch (err) {
           if (err instanceof NimError) {
             return reply.code(502).send({
@@ -325,19 +401,31 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
         }
 
         const parsed = parseAnalyzeResponse(modelText);
+        if (parsed === null) {
+          return reply.code(502).send({
+            error: {
+              code: "model_output_malformed",
+              message:
+                "Nemotron returned output we couldn't parse as the expected JSON shape.",
+            },
+          });
+        }
         setProjectContext({
           repo_url,
-          summary: parsed.summary,
-          // Seed qa with empty answers; the next call (/onboarding/answers)
-          // overwrites these with what the user actually typed.
-          qa: parsed.questions.map((q) => ({ question: q, answer: "" })),
+          documentation: parsed.documentation,
+          questions: parsed.questions,
+          // Reset answers — fresh analyze means stale answers are out.
+          answers: [],
         });
         log.info("onboarding analyze", {
           repoUrl: repo_url,
-          summaryChars: parsed.summary.length,
+          summaryChars: parsed.documentation.summary.length,
           questions: parsed.questions.length,
         });
-        return { summary: parsed.summary, questions: parsed.questions };
+        return {
+          documentation: parsed.documentation,
+          questions: parsed.questions,
+        };
       } finally {
         // Always clean up the clone dir, even on success — the cloned
         // repo is no longer useful once we have the summary.
@@ -347,16 +435,17 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
   );
 
   app.post<{
-    Body: { answers: Array<{ question: string; answer: string }> };
+    Body: { answers: ProjectAnswer[] };
   }>(
     "/onboarding/answers",
     { schema: { body: ANSWERS_BODY } },
     async (req) => {
-      const ctx = setProjectContext({ qa: req.body.answers });
+      const ctx = setProjectContext({ answers: req.body.answers });
       log.info("onboarding answers saved", { count: req.body.answers.length });
       return {
-        summary: ctx.summary,
-        qa: ctx.qa,
+        documentation: ctx.documentation,
+        questions: ctx.questions,
+        answers: ctx.answers,
         updated_at: ctx.updated_at,
       };
     },
@@ -365,7 +454,13 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
   // Lightweight read endpoint so the dashboard can show the captured
   // context on the settings page or pre-fill the onboarding form.
   app.get("/onboarding/context", async () => {
-    const { repo_url, summary, qa, updated_at } = getProjectContext();
-    return { repo_url, summary, qa, updated_at };
+    const ctx = getProjectContext();
+    return {
+      repo_url: ctx.repo_url,
+      documentation: ctx.documentation,
+      questions: ctx.questions,
+      answers: ctx.answers,
+      updated_at: ctx.updated_at,
+    };
   });
 }

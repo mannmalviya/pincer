@@ -267,24 +267,18 @@
 
 /* PlatformBeams traveling-dash animation. Each beam path uses
    pathLength=100 so dasharray/dashoffset are in normalized units; the
-   6-unit dash starts off-path at +100 and travels to -6 over the loop,
-   sliding the bright pulse from the platform icon to the Pincer mark
-   at the center. Stagger comes from animation-delay set per beam. */
+   short dash starts off-path at +100 and travels to a negative offset
+   over the loop, sliding the bright pulse from one end to the other.
+   Stagger comes from animation-delay set per beam. */
 @keyframes beam-pulse {
   from {
     stroke-dashoffset: 100;
   }
   to {
-    stroke-dashoffset: -6;
+    stroke-dashoffset: -8;
   }
 }
 
-/* Helper class applied to the animated beam path. Defining the
-   animation here (rather than in an inline style:{ animation: ... })
-   avoids a subtle React quirk: setting `animation` and `animationDelay`
-   on the same inline-style object can serialize in an order that lets
-   the shorthand reset the delay back to 0. Setting it via class and
-   keeping only the per-beam delay inline sidesteps that entirely. */
 .beam-anim {
-  animation: beam-pulse 3s linear infinite;
+  animation: beam-pulse 2.4s linear infinite;
 }

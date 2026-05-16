@@ -65,6 +65,26 @@ export function getDb(): Database.Database {
     log.info("migration: added comments.parent_external_id");
   }
 
+  // project_context restructure: legacy schema had `summary` + `qa_json`
+  // columns; new schema has `documentation_json`, `questions_json`, and
+  // `answers_json`. Add the new columns idempotently; legacy columns
+  // stay as orphans (SQLite can't easily drop columns) but unread.
+  const projectCols = new Set(
+    (
+      _db.pragma("table_info(project_context)") as Array<{ name: string }>
+    ).map((c) => c.name),
+  );
+  for (const col of [
+    "documentation_json",
+    "questions_json",
+    "answers_json",
+  ] as const) {
+    if (!projectCols.has(col)) {
+      _db.exec(`ALTER TABLE project_context ADD COLUMN ${col} TEXT`);
+      log.info(`migration: added project_context.${col}`);
+    }
+  }
+
   return _db;
 }
 

@@ -65,16 +65,17 @@ CREATE TABLE IF NOT EXISTS comments (
 CREATE INDEX IF NOT EXISTS idx_comments_post_posted ON comments(post_id, posted_at DESC);
 
 -- Project context captured during onboarding. Stores the user's repo URL,
--- the Nemotron-generated project summary, and the Q/A pairs (clarifying
--- questions Nemotron asked + the user's answers). All values stored as
--- TEXT JSON or plain text; the reply route reads these into the prompt
--- so drafted replies stay grounded in the user's actual project.
+-- a Nemotron-generated structured ProjectDocumentation blob, a typed list
+-- of clarifying questions Nemotron asked, and the user's answers. The
+-- reply route reads these into the prompt so drafted replies stay
+-- grounded in the user's actual project.
 CREATE TABLE IF NOT EXISTS project_context (
-  id          INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton row
-  repo_url    TEXT,
-  summary     TEXT,
-  qa_json     TEXT,                                -- JSON array of {question, answer}
-  updated_at  INTEGER NOT NULL DEFAULT (unixepoch())
+  id                 INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton row
+  repo_url           TEXT,
+  documentation_json TEXT,  -- structured ProjectDocumentation JSON
+  questions_json     TEXT,  -- typed ProjectQuestion[] JSON
+  answers_json       TEXT,  -- ProjectAnswer[] keyed by question id
+  updated_at         INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 -- Single-table key/value store for agent-wide knobs the user can tweak

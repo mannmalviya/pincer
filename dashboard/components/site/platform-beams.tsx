@@ -47,7 +47,7 @@ const CENTER = { x: 50, y: 50 };
 // uniform "data is flowing" current rather than six separate streams.
 // sky-400; bright enough to glow on the warm background and not clash
 // with any platform brand color.
-const BEAM_COLOR = "#38bdf8";
+const BEAM_COLOR = "#0369a1";
 
 export function PlatformBeams() {
   return (
@@ -68,8 +68,8 @@ export function PlatformBeams() {
           return <Beam key={n.id} d={d} delay={n.delay} />;
         })}
 
-        {/* Right-side beams: Pincer → Nemotron. Single relay outward
-            from the hub so the pulse reads as a hand-off to the LLM. */}
+        {/* Right-side beams: Pincer to the LLM stack. Same pulsing
+            wire treatment as the left, no per-direction motion. */}
         {STACK.map((n, i) => {
           const prev = i === 0 ? CENTER : STACK[i - 1];
           const cx = (prev.x + n.x) / 2;
@@ -128,40 +128,44 @@ export function PlatformBeams() {
   );
 }
 
-// Single beam: faint background trail + a glowing dash traveling end to
-// end. Extracted so left and right sides share the exact same styling.
+// Single beam: a thick glowing always-on wire with a bright pulse
+// traveling along it. The wire stays lit so the channel is always
+// visible; the bright dash overlay reads as a packet of data moving
+// through. Per-call delay staggers the pulses across the diagram.
 function Beam({ d, delay }: { d: string; delay: string }) {
   return (
     <g>
-      {/* Always-on glowing wire. Higher opacity + drop-shadow filter so
-          the whole path reads as a lit-up data channel, not just where
-          the traveling pulse currently is. */}
+      {/* Always-on wire. Thick, fully opaque, layered drop-shadows for
+          a true "neon pipe" halo around the line. */}
       <path
         d={d}
         pathLength={100}
         fill="none"
         stroke={BEAM_COLOR}
-        strokeOpacity={0.85}
-        strokeWidth={1}
+        strokeOpacity={1}
+        strokeWidth={4}
         strokeLinecap="round"
         vectorEffect="non-scaling-stroke"
         style={{
-          filter: `drop-shadow(0 0 4px ${BEAM_COLOR}) drop-shadow(0 0 8px ${BEAM_COLOR})`,
+          filter: `drop-shadow(0 0 6px ${BEAM_COLOR}) drop-shadow(0 0 14px ${BEAM_COLOR}) drop-shadow(0 0 22px ${BEAM_COLOR})`,
         }}
       />
+      {/* Traveling pulse. Wider than the wire, near-white core with a
+          colored halo, so the packet visibly outshines the channel. */}
       <path
         className="beam-anim"
         d={d}
         pathLength={100}
         fill="none"
-        stroke={BEAM_COLOR}
-        strokeWidth={1.4}
+        stroke="#f0f9ff"
+        strokeWidth={5.5}
         strokeLinecap="round"
-        strokeDasharray="6 100"
+        strokeDasharray="8 100"
         vectorEffect="non-scaling-stroke"
         style={{
           animationDelay: delay,
-          filter: `drop-shadow(0 0 5px ${BEAM_COLOR}) drop-shadow(0 0 10px ${BEAM_COLOR})`,
+          filter:
+            "drop-shadow(0 0 6px #ffffff) drop-shadow(0 0 14px #38bdf8) drop-shadow(0 0 22px #0ea5e9)",
         }}
       />
     </g>

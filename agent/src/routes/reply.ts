@@ -12,10 +12,10 @@
 
 import type { FastifyInstance } from "fastify";
 
-import { NIM_REPLY_MODEL } from "../config.js";
 import { getDb } from "../db.js";
 import { log } from "../lib/log.js";
-import { chatComplete, NimError, nimConfigured } from "../lib/nim.js";
+import { NimError, nimConfigured } from "../lib/nim.js";
+import { orchestratedChatComplete } from "../lib/orchestrate.js";
 import { projectContextForPrompt } from "../lib/project-context.js";
 
 type CommentJoinRow = {
@@ -97,8 +97,8 @@ export function registerReplyRoute(app: FastifyInstance): void {
       const user = userSections.join("\n");
 
       try {
-        const draft = await chatComplete({
-          model: NIM_REPLY_MODEL,
+        const result = await orchestratedChatComplete({
+          task: `draft a short reply to a ${platformName} comment on a product launch post`,
           messages: [
             { role: "system", content: system },
             { role: "user", content: user },
@@ -109,9 +109,11 @@ export function registerReplyRoute(app: FastifyInstance): void {
         log.info("reply drafted", {
           commentId: id,
           platform: row.platform,
-          chars: draft.length,
+          chars: result.text.length,
+          tier: result.tier,
+          model: result.model,
         });
-        return { draft, model: NIM_REPLY_MODEL };
+        return { draft: result.text, model: result.model };
       } catch (err) {
         if (err instanceof NimError) {
           log.error("reply drafting failed", {

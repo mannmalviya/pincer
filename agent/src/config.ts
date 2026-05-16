@@ -58,3 +58,15 @@ export const NIM_API_KEY = process.env.NIM_API_KEY ?? "";
 // model we can call without self-hosting.
 export const NIM_REPLY_MODEL =
   process.env.NIM_REPLY_MODEL ?? "nvidia/llama-3.3-nemotron-super-49b-v1";
+
+// LLM-orchestrator routing: before every "real" call, a cheap orchestrator
+// model decides whether the task warrants the primary (strong, expensive)
+// or fast (cheap, faster) model. Defaults below mean the orchestrator is
+// effectively a no-op until the user configures at least two distinct
+// models — same model for all three roles short-circuits the extra call.
+export const NIM_PRIMARY_MODEL =
+  process.env.NIM_PRIMARY_MODEL ?? NIM_REPLY_MODEL;
+export const NIM_FAST_MODEL =
+  process.env.NIM_FAST_MODEL ?? NIM_REPLY_MODEL;
+export const NIM_ORCHESTRATOR_MODEL =
+  process.env.NIM_ORCHESTRATOR_MODEL ?? NIM_FAST_MODEL;

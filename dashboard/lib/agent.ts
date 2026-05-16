@@ -110,10 +110,37 @@ export type AgentSettings = {
   adaptive_polling_enabled: boolean;
 };
 
-// Onboarding: ask the agent to clone + analyze the user's repo and return
-// a project summary plus 4-6 clarifying questions for the user.
+// Onboarding: structured documentation + typed clarifying questions the
+// agent returns from /onboarding/analyze. Mirrors the agent's
+// ProjectDocumentation / ProjectQuestion / ProjectAnswer types one-to-one
+// so they serialize cleanly over JSON.
+export type ProjectDocumentation = {
+  summary: string;
+  key_features: string[];
+  tech_stack: string[];
+  target_audience: string;
+  voice_guidance: string;
+  things_to_avoid: string[];
+};
+
+export type ProjectQuestionOption = {
+  label: string;
+  description?: string;
+};
+
+export type ProjectQuestion =
+  | {
+      id: string;
+      type: "mcq";
+      text: string;
+      options: ProjectQuestionOption[];
+    }
+  | { id: string; type: "text"; text: string };
+
+export type ProjectAnswer = { id: string; answer: string };
+
 export type AnalyzeRepoResult =
-  | { ok: true; summary: string; questions: string[] }
+  | { ok: true; documentation: ProjectDocumentation; questions: ProjectQuestion[] }
   | { ok: false; code: string; message: string };
 
 export async function analyzeRepo(
@@ -139,8 +166,15 @@ export async function analyzeRepo(
         message: err?.message ?? `HTTP ${res.status}`,
       };
     }
-    const data = body as { summary: string; questions: string[] };
-    return { ok: true, summary: data.summary, questions: data.questions };
+    const data = body as {
+      documentation: ProjectDocumentation;
+      questions: ProjectQuestion[];
+    };
+    return {
+      ok: true,
+      documentation: data.documentation,
+      questions: data.questions,
+    };
   } catch (err) {
     return {
       ok: false,
@@ -154,7 +188,7 @@ export async function analyzeRepo(
 // persists them on its project_context row; the reply route then reads
 // them as additional grounding for drafted comment replies.
 export async function saveOnboardingAnswers(
-  answers: Array<{ question: string; answer: string }>,
+  answers: ProjectAnswer[],
 ): Promise<boolean> {
   try {
     const res = await fetch(`${AGENT_BASE}/onboarding/answers`, {
