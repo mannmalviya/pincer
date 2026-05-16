@@ -11,6 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   AGENT_BASE,
   analyzeRepo,
+  saveGithubPat,
   saveOnboardingAnswers,
   type ProjectAnswer,
   type ProjectDocumentation,
@@ -746,15 +747,20 @@ function BackfillStep({
 }
 
 // ---------------------------------------------------------------------------
-// Step 0 (new first step) — project analysis.
+// Step 0 (first step) project analysis.
 //
-// User pastes a GitHub repo URL (optionally with a PAT for private repos).
-// The agent clones, samples README + source, and asks Nemotron for two
-// things: (1) a structured ProjectDocumentation block, and (2) a typed
-// questionnaire of 4-6 MCQ + free-text questions. We render the doc as a
-// preview and the questions in Claude-Code-style cards. Submitting POSTs
-// the typed answers to /onboarding/answers; only then does the wizard
-// advance to platform select.
+// The user pastes a GitHub repo URL and a personal access token. The PAT
+// is required because:
+//   1. It's the simplest credential model (no OAuth App registration,
+//      no callback URLs, no env vars).
+//   2. With it stored on the agent, future features (re-analyze, list
+//      releases, etc.) work without re-prompting.
+//
+// Submitting saves the PAT to the agent, then calls /onboarding/analyze.
+// The agent fetches the README via the GitHub REST API (using the stored
+// PAT, so private repos work) and asks Nemotron for structured
+// documentation + clarifying questions. The user answers them and the
+// wizard advances to platform select.
 // ---------------------------------------------------------------------------
 function ProjectStep({
   repoUrl,
@@ -791,7 +797,22 @@ function ProjectStep({
     setError(null);
     setAnalyzing(true);
     setDone(false);
-    const res = await analyzeRepo(repoUrl.trim(), repoToken.trim() || undefined);
+
+    // Save the PAT to the agent first. The agent verifies it against
+    // GitHub's /user, so a bad PAT comes back as an actionable error
+    // here instead of failing the analyze call with a confusing
+    // GitHub 401.
+    const saveResult = await saveGithubPat(repoToken.trim());
+    if (!saveResult.ok) {
+      setError(saveResult.message);
+      setAnalyzing(false);
+      return;
+    }
+
+    // The token is now stored on the agent, so we don't need to pass
+    // it again in the analyze body, the route will pick it up from
+    // settings. Passing it anyway as a belt-and-suspenders.
+    const res = await analyzeRepo(repoUrl.trim(), repoToken.trim());
     if (!res.ok) {
       setError(res.message);
       setAnalyzing(false);
@@ -831,6 +852,12 @@ function ProjectStep({
     questions.length > 0 &&
     questions.every((q) => answerFor(q.id).trim().length > 0);
 
+  // Form is valid when both fields look non-empty. PAT length sanity
+  // check (10) catches obvious typos; the agent's own /user verification
+  // is the real source of truth on whether the PAT actually works.
+  const canAnalyze =
+    repoUrl.trim().length > 0 && repoToken.trim().length >= 10;
+
   return (
     <Card>
       <CardHeader>
@@ -838,9 +865,9 @@ function ProjectStep({
           Tell Pincer about your project
         </CardTitle>
         <CardDescription>
-          Paste your GitHub repo. Pincer reads your README and source, builds
-          its own documentation, then asks a few questions so drafted replies
-          sound like you.
+          Paste your GitHub repo URL and a personal access token. Pincer
+          reads the README, builds a profile of your project, then asks a
+          few quick questions so drafted replies sound like you.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
@@ -857,10 +884,7 @@ function ProjectStep({
         </label>
 
         <label className="flex flex-col gap-1">
-          <span className="text-sm font-medium">
-            GitHub token{" "}
-            <span className="text-foreground/55 font-normal">(optional, private repos only)</span>
-          </span>
+          <span className="text-sm font-medium">GitHub personal access token</span>
           <input
             type="password"
             value={repoToken}
@@ -870,12 +894,23 @@ function ProjectStep({
             className="rounded-lg border border-foreground/15 bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:border-foreground/40 disabled:opacity-60"
           />
           <span className="text-xs text-foreground/55 leading-relaxed">
-            Used once to clone, never stored. Read-only `contents` scope is
-            enough.
+            Create one at{" "}
+            <a
+              href="https://github.com/settings/tokens?type=beta"
+              target="_blank"
+              rel="noreferrer"
+              className="underline hover:text-foreground"
+            >
+              github.com/settings/tokens
+            </a>
+            . For private repos pick the{" "}
+            <span className="font-mono">Contents: Read</span> permission;
+            for public-only a token with no scopes is enough. Stored on
+            the agent, used to read your README via the GitHub API.
           </span>
         </label>
 
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           {error && (
             <p className="text-xs text-red-700 dark:text-red-400 font-mono">
               {error}
@@ -884,7 +919,7 @@ function ProjectStep({
           {documentation === null && (
             <Button
               onClick={handleAnalyze}
-              disabled={analyzing || repoUrl.trim().length === 0}
+              disabled={analyzing || !canAnalyze}
               className="ml-auto"
             >
               {analyzing ? "Analyzing..." : "Analyze repo"}
@@ -896,9 +931,6 @@ function ProjectStep({
           <DocumentationPreview doc={documentation} />
         )}
 
-        {/* Questions block: only renders when the LLM actually returned
-            questions. When it decides it has enough signal and asks none,
-            we skip straight to a "Looks good" continue button below. */}
         {questions.length > 0 && (
           <div className="flex flex-col gap-4">
             <p className="text-xs uppercase tracking-wider text-foreground/55 font-mono">

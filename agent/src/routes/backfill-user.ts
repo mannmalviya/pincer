@@ -1,11 +1,15 @@
 // POST /backfill-user — enumerate every public post by a given username on
-// Reddit or Hacker News and register them as watched posts.
+// Reddit, Hacker News, or Bluesky and register them as watched posts.
 //
-// Reddit: GET reddit.com/user/{name}/submitted.json — public, no auth.
-//         One page (limit=100) is plenty for indie hackers; if a user has
-//         more, they can paginate manually via repeated paste.
-// HN:     GET hn.algolia.com/api/v1/search_by_date?author={name}&tags=story
-//         Algolia returns up to 1000 in a single page, sorted newest-first.
+// Reddit:  GET reddit.com/user/{name}/submitted.json — public, no auth.
+//          One page (limit=100) is plenty for indie hackers; if a user has
+//          more, they can paginate manually via repeated paste.
+// HN:      GET hn.algolia.com/api/v1/search_by_date?author={name}&tags=story
+//          Algolia returns up to 1000 in a single page, sorted newest-first.
+// Bluesky: GET public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed
+//          ?actor={handle-or-did}&limit=100 — public AppView, no auth.
+//          The endpoint mixes original posts with reposts and replies, so we
+//          filter to top-level original posts before registering.
 //
 // We register each discovered URL via the shared registerByUrl helper, so
 // the resulting rows are indistinguishable from individually-pasted URLs.
@@ -20,8 +24,11 @@ const BODY_SCHEMA = {
   type: "object",
   required: ["platform", "username"],
   properties: {
-    platform: { type: "string", enum: ["reddit", "hn"] },
-    username: { type: "string", minLength: 1, maxLength: 64 },
+    platform: { type: "string", enum: ["reddit", "hn", "bluesky"] },
+    // For Bluesky, `username` is either a handle (alice.bsky.social) or a
+    // raw DID (did:plc:...). Handles can include dots, so we keep the
+    // maxLength generous enough for full hostnames.
+    username: { type: "string", minLength: 1, maxLength: 253 },
     // Whether to enroll the discovered posts in the watch loop. Defaults
     // to true; passing false records them as history without polling.
     watch: { type: "boolean" },
@@ -69,9 +76,52 @@ async function discoverHnUrls(username: string): Promise<string[]> {
   );
 }
 
+// One feed item from app.bsky.feed.getAuthorFeed. Narrowed to the fields we
+// inspect: `reason` is present on reposts, `reply` on replies. Original
+// top-level posts have neither.
+type BskyFeedItem = {
+  post: {
+    uri: string;
+    author: { did: string; handle?: string };
+  };
+  reason?: unknown;  // present on reposts (e.g. {$type: "...#reasonRepost"})
+  reply?: unknown;   // present on replies (parent/root refs)
+};
+
+type BskyAuthorFeedResponse = {
+  feed: BskyFeedItem[];
+};
+
+async function discoverBlueskyUrls(actor: string): Promise<string[]> {
+  // limit=100 is the AppView's maximum per page. For a single-page backfill
+  // of an indie hacker's launch posts this is plenty; deeper history would
+  // need cursor-based pagination, deferred until someone asks.
+  const url =
+    `https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed` +
+    `?actor=${encodeURIComponent(actor)}&limit=100`;
+  const data = await getJson<BskyAuthorFeedResponse>(url);
+
+  // Filter out reposts (reason set) and replies (reply set). What's left
+  // are the actor's own top-level posts, which is what "backfill my
+  // launches" actually wants. We convert each AT URI into the canonical
+  // bsky.app web URL; parseUrl re-resolves the handle on registration, so
+  // we don't have to round-trip the DID here.
+  return data.feed
+    .filter((item) => item.reason === undefined && item.reply === undefined)
+    .map((item) => {
+      const handle = item.post.author.handle ?? item.post.author.did;
+      const rkey = item.post.uri.slice(item.post.uri.lastIndexOf("/") + 1);
+      return `https://bsky.app/profile/${handle}/post/${rkey}`;
+    });
+}
+
 export function registerBackfillUserRoute(app: FastifyInstance): void {
   app.post<{
-    Body: { platform: "reddit" | "hn"; username: string; watch?: boolean };
+    Body: {
+      platform: "reddit" | "hn" | "bluesky";
+      username: string;
+      watch?: boolean;
+    };
   }>(
     "/backfill-user",
     { schema: { body: BODY_SCHEMA } },
@@ -80,10 +130,17 @@ export function registerBackfillUserRoute(app: FastifyInstance): void {
 
       let urls: string[];
       try {
-        urls =
-          platform === "reddit"
-            ? await discoverRedditUrls(username)
-            : await discoverHnUrls(username);
+        switch (platform) {
+          case "reddit":
+            urls = await discoverRedditUrls(username);
+            break;
+          case "hn":
+            urls = await discoverHnUrls(username);
+            break;
+          case "bluesky":
+            urls = await discoverBlueskyUrls(username);
+            break;
+        }
       } catch (err) {
         return reply.code(502).send({
           error: {

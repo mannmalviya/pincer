@@ -54,7 +54,7 @@ export function registerCommentsRoute(app: FastifyInstance): void {
         score: (r.score as number | null) ?? null,
         parent_external_id: (r.parent_external_id as string | null) ?? null,
         post_id: r.post_id as number,
-        platform: r.platform as "reddit" | "hn",
+        platform: r.platform as "reddit" | "hn" | "bluesky",
         post_title: (r.post_title as string | null) ?? null,
         post_permalink: r.post_permalink as string,
       }));

@@ -144,15 +144,20 @@ export type AnalyzeRepoResult =
   | { ok: false; code: string; message: string };
 
 export async function analyzeRepo(
-  repoUrl: string,
+  repoUrl?: string,
   token?: string,
 ): Promise<AnalyzeRepoResult> {
+  // Empty/undefined repoUrl triggers the agent's fallback questionnaire
+  // path (a generic 4-question survey instead of README-driven). We omit
+  // the key entirely rather than send "" so the body matches the agent's
+  // optional-field schema.
+  const trimmedUrl = repoUrl?.trim() ?? "";
   try {
     const res = await fetch(`${AGENT_BASE}/onboarding/analyze`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        repo_url: repoUrl,
+        ...(trimmedUrl.length > 0 ? { repo_url: trimmedUrl } : {}),
         ...(token ? { token } : {}),
       }),
     });
@@ -287,5 +292,83 @@ export async function fetchStats(): Promise<AgentStats | null> {
     return (await res.json()) as AgentStats;
   } catch {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// GitHub PAT integration.
+//
+// These helpers hit the dashboard's own /api/auth/github/* proxy routes
+// (not the agent directly) so the browser doesn't have to deal with
+// CORS / Brev auth-wall behaviour. The agent is the system of record;
+// these are just thin pass-throughs.
+// ---------------------------------------------------------------------------
+
+export type GithubStatus = {
+  // The agent has a stored PAT that just verified successfully.
+  connected: boolean;
+  // GitHub login of the authenticated user, present when connected.
+  login?: string;
+  // True if the dashboard could reach the agent. False usually means the
+  // agent is offline or the AGENT_BASE URL is wrong.
+  agent_reachable: boolean;
+};
+
+export async function fetchGithubStatus(): Promise<GithubStatus> {
+  try {
+    const res = await fetch("/api/auth/github/status", { cache: "no-store" });
+    if (!res.ok) {
+      return { connected: false, agent_reachable: false };
+    }
+    return (await res.json()) as GithubStatus;
+  } catch {
+    return { connected: false, agent_reachable: false };
+  }
+}
+
+export type SavePatResult =
+  | { ok: true; login: string | null }
+  | { ok: false; code: string; message: string };
+
+// Save a personal access token to the agent. The agent verifies it
+// against GitHub's /user before storing, so a 400 here means GitHub
+// rejected the token (most likely a typo or an expired PAT).
+export async function saveGithubPat(token: string): Promise<SavePatResult> {
+  try {
+    const res = await fetch("/api/auth/github/connect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ access_token: token }),
+    });
+    const data = (await res.json().catch(() => null)) as
+      | { ok?: boolean; login?: string | null; error?: string; message?: string }
+      | null;
+    if (!res.ok || data?.ok === false) {
+      return {
+        ok: false,
+        code: data?.error ?? `http_${res.status}`,
+        message:
+          data?.message ??
+          (res.status === 400
+            ? "GitHub did not accept that token."
+            : `HTTP ${res.status}`),
+      };
+    }
+    return { ok: true, login: data?.login ?? null };
+  } catch (err) {
+    return {
+      ok: false,
+      code: "network_error",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export async function disconnectGithub(): Promise<boolean> {
+  try {
+    const res = await fetch("/api/auth/github/disconnect", { method: "POST" });
+    return res.ok;
+  } catch {
+    return false;
   }
 }

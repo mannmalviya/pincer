@@ -26,12 +26,12 @@ export async function registerByUrl(
   source: PostSource,
   watch: boolean,
 ): Promise<RegisterResult> {
-  const parsed = parseUrl(url);
+  const parsed = await parseUrl(url);
   if (parsed === null) {
     return {
       ok: false,
       code: "unparseable_url",
-      message: `Could not parse a Reddit or HN URL from: ${url}`,
+      message: `Could not parse a Reddit, HN, or Bluesky URL from: ${url}`,
     };
   }
 

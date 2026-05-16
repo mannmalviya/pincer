@@ -1,14 +1,15 @@
 -- Pincer agent schema. Executed once at startup by db.ts via db.exec().
 --
 -- Tables:
---   posts       — one row per registered Reddit/HN post we want to track.
+--   posts       — one row per registered Reddit/HN/Bluesky post we want to track.
 --   snapshots   — append-only time series of (score, comment_count) per post.
 --   comments    — every distinct comment we've seen on a watched post.
 --
 -- Design notes:
 --   * `external_id` is the platform's own ID (Reddit's "1abc23", HN's numeric
---     item id). The (platform, external_id) UNIQUE constraint guarantees we
---     never double-register the same post.
+--     item id, Bluesky's full AT URI `at://did:.../app.bsky.feed.post/<rkey>`).
+--     The (platform, external_id) UNIQUE constraint guarantees we never
+--     double-register the same post.
 --   * `watch_enabled` toggles whether the watch loop polls this post. Posts
 --     stay in the DB when paused so we keep the history visible in the UI.
 --   * `source` records how the row got here — useful for analytics and for
@@ -22,7 +23,7 @@
 
 CREATE TABLE IF NOT EXISTS posts (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  platform      TEXT    NOT NULL CHECK (platform IN ('reddit','hn')),
+  platform      TEXT    NOT NULL CHECK (platform IN ('reddit','hn','bluesky')),
   external_id   TEXT    NOT NULL,
   permalink     TEXT    NOT NULL,
   title         TEXT,
@@ -54,7 +55,8 @@ CREATE TABLE IF NOT EXISTS comments (
   posted_at           INTEGER,
   fetched_at          INTEGER NOT NULL DEFAULT (unixepoch()),
   -- Per-comment score. Reddit returns a real value; HN doesn't surface it,
-  -- so HN rows always store NULL. Treat NULL as "unknown", not "zero".
+  -- so HN rows always store NULL. Bluesky stores the reply's likeCount.
+  -- Treat NULL as "unknown", not "zero".
   score               INTEGER,
   -- Parent comment's external_id. NULL when the comment is a top-level
   -- reply to the post itself. Enables future threading reconstruction

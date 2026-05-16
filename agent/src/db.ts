@@ -65,6 +65,48 @@ export function getDb(): Database.Database {
     log.info("migration: added comments.parent_external_id");
   }
 
+  // posts.platform CHECK widening. SQLite has no ALTER CONSTRAINT, so when
+  // the live table's CHECK is missing a newer platform (e.g. 'bluesky' was
+  // added after the DB was created), we rebuild the table in place. Detected
+  // by reading the CREATE TABLE SQL out of sqlite_master and substring-
+  // matching the platform name. Idempotent: once 'bluesky' is in the CHECK,
+  // we skip the rebuild on subsequent boots.
+  const postsSqlRow = _db
+    .prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'posts'`,
+    )
+    .get() as { sql: string } | undefined;
+  if (postsSqlRow && !postsSqlRow.sql.includes("'bluesky'")) {
+    log.info("migration: rebuilding posts to widen platform CHECK");
+    _db.exec(`
+      BEGIN;
+      ALTER TABLE posts RENAME TO posts_old;
+      CREATE TABLE posts (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform      TEXT    NOT NULL CHECK (platform IN ('reddit','hn','bluesky')),
+        external_id   TEXT    NOT NULL,
+        permalink     TEXT    NOT NULL,
+        title         TEXT,
+        body          TEXT,
+        author        TEXT,
+        posted_at     INTEGER,
+        watch_enabled INTEGER NOT NULL DEFAULT 1,
+        source        TEXT    NOT NULL DEFAULT 'manual'
+                                CHECK (source IN ('published','backfill','manual')),
+        created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+        UNIQUE (platform, external_id)
+      );
+      INSERT INTO posts
+        (id, platform, external_id, permalink, title, body, author,
+         posted_at, watch_enabled, source, created_at)
+      SELECT id, platform, external_id, permalink, title, body, author,
+             posted_at, watch_enabled, source, created_at
+        FROM posts_old;
+      DROP TABLE posts_old;
+      COMMIT;
+    `);
+  }
+
   // project_context restructure: legacy schema had `summary` + `qa_json`
   // columns; new schema has `documentation_json`, `questions_json`, and
   // `answers_json`. Add the new columns idempotently; legacy columns

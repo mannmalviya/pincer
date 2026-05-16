@@ -2,30 +2,32 @@
 //
 //   POST /onboarding/analyze
 //     body: { repo_url, token? }
-//     1. Shallow-clones the repo to a temp dir.
-//     2. Reads README + a handful of top-level files (capped by byte count).
-//     3. Asks Nemotron Super to produce a 1-2 sentence project summary
-//        plus 4-6 clarifying questions for the user.
-//     4. Stores the summary on the singleton project_context row.
-//     5. Returns { summary, questions } so the dashboard can prompt the user.
+//     Fetches the repo's README via the GitHub REST API and asks Nemotron
+//     Super to produce a structured ProjectDocumentation block + a typed
+//     list of clarifying questions. Both fields together make the
+//     drafted-reply prompt project-aware.
 //
 //   POST /onboarding/answers
-//     body: { answers: [{question, answer}] }
-//     Persists the Q/A pairs onto project_context. The reply route reads
-//     these as additional grounding for drafted comment replies.
+//     body: { answers: [{id, answer}] }
+//     Persists the typed Q/A pairs onto project_context. The reply route
+//     reads these as grounding for drafted comment replies.
 //
-// Private repo support: pass a GitHub PAT in `token`. We embed it into
-// the clone URL once and never store it; the PAT-bearing URL stays only
-// in argv for the lifetime of the child_process.
-
-import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+// Token resolution order for the README fetch:
+//   1. token in the request body (one-off PAT, used and not stored here)
+//   2. the stored GitHub PAT (saved via POST /integrations/github/connect)
+//   3. unauthenticated (works for public repos, rate-limited to 60 req/hr
+//      per IP which is fine for an onboarding flow)
+//
+// Previously this endpoint shelled out to `git clone` and sampled README +
+// source files. We replaced that with a single REST call because (a) it
+// removes the `git` binary dependency on the host, (b) it never touches
+// source code (purely README-based), and (c) it works inside Brev's
+// sandbox without the egress and disk concerns of a clone.
 
 import type { FastifyInstance } from "fastify";
 
 import { log } from "../lib/log.js";
+import { getGithubToken } from "../lib/github-oauth.js";
 import { NimError, nimConfigured } from "../lib/nim.js";
 import { orchestratedChatComplete } from "../lib/orchestrate.js";
 import {
@@ -67,166 +69,105 @@ const ANSWERS_BODY = {
   additionalProperties: false,
 } as const;
 
-// Hard caps so a giant repo can't blow out memory or NIM context.
-const MAX_FILES = 12;
-const MAX_BYTES = 60_000;
-// Files we look for in priority order. README and package.json carry the
-// most signal; we grab a sprinkle of source after that if budget remains.
-const PRIORITY_FILES = [
-  "README.md",
-  "README",
-  "readme.md",
-  "package.json",
-  "PLAN.md",
-  "ARCHITECTURE.md",
-  "docs/README.md",
-];
+// Hard cap on the README excerpt we send to Nemotron. Real-world READMEs
+// are usually well under this; the cap keeps a pathological 200KB README
+// from blowing out the context window.
+const MAX_README_BYTES = 50_000;
 
-function cloneArgs(repoUrl: string, token: string | undefined, dest: string) {
-  // Embed PAT into the URL for private repos. Format used by GitHub for
-  // HTTPS basic auth with a PAT: https://<token>@github.com/owner/repo
-  let url = repoUrl;
-  if (token && /^https?:\/\//.test(url)) {
-    url = url.replace(/^https?:\/\//, (proto) => `${proto}${token}@`);
+// Parse a GitHub repo URL into { owner, repo }. Accepts:
+//   https://github.com/owner/repo
+//   https://github.com/owner/repo.git
+//   https://github.com/owner/repo/tree/main/...   (path suffix ignored)
+//   http://github.com/owner/repo
+// Returns null on anything we can't recognize so the caller can return
+// a 400 with a useful message.
+function parseGithubUrl(url: string): { owner: string; repo: string } | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
   }
-  return ["clone", "--depth=1", "--single-branch", url, dest];
+  if (!/github\.com$/i.test(parsed.hostname)) return null;
+  // Strip leading slash, drop trailing slashes, take the first two segments.
+  const parts = parsed.pathname.replace(/^\/+|\/+$/g, "").split("/");
+  const owner = parts[0];
+  const rawRepo = parts[1];
+  if (!owner || !rawRepo) return null;
+  const repo = rawRepo.replace(/\.git$/i, "");
+  if (repo.length === 0) return null;
+  return { owner, repo };
 }
 
-// Scrub a string so it can be returned to the HTTP caller without leaking
-// auth material. Git's stderr on an auth failure sometimes echoes the
-// full clone URL, including the PAT we embed for private repos. We
-// replace any occurrence of the literal token with `***`, then also
-// rewrite "https://<anything>@host/" → "https://***@host/" as a belt-
-// and-suspenders catch for prefix variants.
-function scrubSecrets(text: string, token: string | undefined): string {
-  let out = text;
-  if (token && token.length > 0) {
-    out = out.split(token).join("***");
-  }
-  out = out.replace(/(https?:\/\/)[^@\s/]+@/g, "$1***@");
-  return out;
-}
+// Fetch the repo's README via the GitHub REST API. Token is optional;
+// without one we still work for public repos (60 req/hr per IP), with
+// one we get 5000 req/hr and access to private repos the token can see.
+// Returns the raw markdown string, or an Error-typed object the caller
+// can map to an HTTP status.
+type ReadmeFetchResult =
+  | { ok: true; readme: string }
+  | { ok: false; status: number; message: string };
 
-async function gitClone(
-  repoUrl: string,
-  token: string | undefined,
-  dest: string,
-): Promise<void> {
-  const args = cloneArgs(repoUrl, token, dest);
-  await new Promise<void>((res, rej) => {
-    const child = spawn("git", args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      // GIT_TERMINAL_PROMPT=0 prevents git from hanging on an auth prompt
-      // for a private repo when no token was supplied.
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on("error", (err) => {
-      // ENOENT etc — re-wrap with a user-actionable message instead of
-      // the raw spawn error. The original message rarely helps the
-      // dashboard user.
-      rej(
-        new Error(
-          err.message.includes("ENOENT")
-            ? "git is not installed on the agent host"
-            : scrubSecrets(err.message, token),
-        ),
-      );
-    });
-    child.on("exit", (code) => {
-      if (code === 0) res();
-      else {
-        const safe = scrubSecrets(stderr, token).slice(0, 300);
-        rej(new Error(`git clone exited ${code}: ${safe}`));
-      }
-    });
-  });
-}
+async function fetchReadme(
+  owner: string,
+  repo: string,
+  token: string | null,
+): Promise<ReadmeFetchResult> {
+  const headers: Record<string, string> = {
+    // Use the raw media type so GitHub returns the README body directly
+    // instead of a base64-encoded JSON envelope. Saves us a decode step.
+    Accept: "application/vnd.github.raw",
+    "User-Agent": "pincer-agent",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
 
-async function readRepoSnapshot(root: string): Promise<string> {
-  const out: string[] = [];
-  let bytes = 0;
-  const seen = new Set<string>();
-
-  async function tryFile(relPath: string): Promise<void> {
-    if (seen.has(relPath)) return;
-    const abs = resolve(root, relPath);
-    try {
-      const s = await stat(abs);
-      if (!s.isFile()) return;
-      const content = await readFile(abs, "utf-8");
-      const sliced = content.slice(0, Math.max(0, MAX_BYTES - bytes));
-      if (sliced.length === 0) return;
-      out.push(`\n=== ${relPath} ===\n${sliced}`);
-      bytes += sliced.length;
-      seen.add(relPath);
-    } catch {
-      // Missing or unreadable file is fine; skip silently.
-    }
+  let res: Response;
+  try {
+    res = await fetch(
+      `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/readme`,
+      { headers },
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      status: 502,
+      message:
+        err instanceof Error
+          ? `Network error talking to GitHub: ${err.message}`
+          : "Network error talking to GitHub",
+    };
   }
 
-  for (const f of PRIORITY_FILES) {
-    if (bytes >= MAX_BYTES || seen.size >= MAX_FILES) break;
-    await tryFile(f);
+  if (res.status === 404) {
+    return {
+      ok: false,
+      status: 404,
+      message:
+        "GitHub returned 404. The repo may be private (connect GitHub or pass a PAT) or the URL may be wrong.",
+    };
+  }
+  if (res.status === 401 || res.status === 403) {
+    return {
+      ok: false,
+      status: res.status,
+      message:
+        "GitHub denied the request. If this is a private repo, connect GitHub from Settings (or pass a PAT with the `repo` scope).",
+    };
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    return {
+      ok: false,
+      status: 502,
+      message: `GitHub returned ${res.status}: ${body.slice(0, 200)}`,
+    };
   }
 
-  // Sample additional files we haven't already covered. Recurses into
-  // directories so a project with src/components/foo.ts gets seen, but
-  // bounds depth + skips noisy / heavy directories (node_modules, .git,
-  // build outputs) so we don't waste budget on irrelevant files.
-  const interestingExt = /\.(md|ts|tsx|js|jsx|py|go|rs|java|rb|toml|yaml|yml)$/i;
-  const skipFiles = /package-lock|yarn\.lock|pnpm-lock|\.min\./;
-  const skipDirs = new Set([
-    "node_modules",
-    ".git",
-    "dist",
-    "build",
-    ".next",
-    "out",
-    "target",
-    "venv",
-    ".venv",
-    "__pycache__",
-    ".cache",
-  ]);
-  const MAX_DEPTH = 3;
-
-  async function walk(
-    dir: string,
-    prefix: string,
-    depth: number,
-  ): Promise<void> {
-    if (depth > MAX_DEPTH) return;
-    if (bytes >= MAX_BYTES || seen.size >= MAX_FILES) return;
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    // Sort so the priority is deterministic (alphabetical) regardless of
-    // FS readdir order. Stable cross-platform behavior.
-    entries.sort((a, b) => a.name.localeCompare(b.name));
-    for (const ent of entries) {
-      if (bytes >= MAX_BYTES || seen.size >= MAX_FILES) return;
-      if (ent.name.startsWith(".") && ent.name !== ".env.example") continue;
-      const rel = prefix ? `${prefix}/${ent.name}` : ent.name;
-      if (ent.isDirectory()) {
-        if (skipDirs.has(ent.name)) continue;
-        await walk(resolve(dir, ent.name), rel, depth + 1);
-      } else if (ent.isFile()) {
-        if (!interestingExt.test(ent.name)) continue;
-        if (skipFiles.test(ent.name)) continue;
-        await tryFile(rel);
-      }
-    }
-  }
-  await walk(root, "", 0);
-
-  return out.join("\n").trim();
+  const text = await res.text();
+  // Cap to keep the prompt bounded. A README longer than 50KB is unusual
+  // and the bottom is almost always license / contributing boilerplate,
+  // which adds noise more than signal.
+  return { ok: true, readme: text.slice(0, MAX_README_BYTES) };
 }
 
 type AnalyzeResponse = {
@@ -249,10 +190,6 @@ function parseAnalyzeResponse(text: string): AnalyzeResponse | null {
   }
   if (typeof parsed !== "object" || parsed === null) return null;
   const o = parsed as Record<string, unknown>;
-  // `documentation` is required but its inner fields are optional — the
-  // prompt tells Nemotron to omit fields it has no signal for. We coerce
-  // each one defensively so a missing key reads as empty rather than
-  // throwing the whole response away.
   const d = (o.documentation as Record<string, unknown> | undefined) ?? {};
   if (typeof d !== "object" || d === null) return null;
 
@@ -309,128 +246,128 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
     "/onboarding/analyze",
     { schema: { body: ANALYZE_BODY } },
     async (req, reply) => {
+      const repoUrl = req.body.repo_url.trim();
+      const requestToken = req.body.token?.trim();
+
       if (!nimConfigured()) {
         return reply.code(503).send({
           error: {
             code: "nim_not_configured",
-            message:
-              "Set NIM_API_KEY on the agent to enable repo analysis.",
+            message: "Set NIM_API_KEY on the agent to enable repo analysis.",
           },
         });
       }
 
-      const { repo_url, token } = req.body;
-      const dir = await mkdtemp(join(tmpdir(), "pincer-clone-"));
-      try {
-        try {
-          await gitClone(repo_url, token, dir);
-        } catch (err) {
-          return reply.code(400).send({
-            error: {
-              code: "clone_failed",
-              message: err instanceof Error ? err.message : String(err),
-            },
-          });
-        }
-
-        const snapshot = await readRepoSnapshot(dir);
-        if (snapshot.length === 0) {
-          return reply.code(400).send({
-            error: {
-              code: "empty_repo",
-              message:
-                "Cloned, but found no readable README / source files.",
-            },
-          });
-        }
-
-        const system = [
-          "You are analyzing a software project to help its creator market it.",
-          "Read the supplied repo excerpts and return STRICTLY VALID JSON with two top-level keys: `documentation` and `questions`.",
-          "",
-          "`documentation` is an object describing what you learned. Include the keys that make sense for this project. Strongly preferred keys:",
-          " - summary: short prose, what the project does and who it's for. Plain language, no marketing speak.",
-          " - key_features: array of short feature strings.",
-          " - tech_stack: array naming languages, frameworks, and key infra you saw.",
-          " - target_audience: one sentence on who this is for.",
-          " - voice_guidance: one sentence on the tone the assistant should use, inferred from the README's voice.",
-          " - things_to_avoid: array of claims or framings the assistant should NOT make. Empty array is fine if nothing comes to mind.",
-          "Omit any field where you genuinely have no signal; never invent.",
-          "",
-          "`questions` is an array of clarifying questions targeting things the repo doesn't tell you. Ask as many or as few as you need to feel confident drafting on-brand replies, ranging from zero (you're already confident) up to roughly a dozen (codebase is opaque, audience unclear).",
-          "Each question is an object: { id, type, text, options? }",
-          " - `id` is a short stable slug like 'audience' or 'tone'. Unique within the array.",
-          " - `type` is either 'mcq' (single-choice with labeled options) or 'text' (free-form).",
-          " - `text` is the question shown to the user.",
-          " - `options` is required when type is 'mcq'. Each option is { label: short choice, description: one-sentence explainer }. Provide enough options to cover the realistic answers, typically 2-5.",
-          "Mix question types as you see fit. Prefer 'mcq' when you can enumerate likely answers because users answer those faster.",
-          "",
-          "Good question targets: target audience boundaries, what NOT to claim, the single feature to lead with, technical depth to assume, voice on different platforms, who the project is meant to compete with.",
-          "Avoid asking about pricing, business model, or roadmap unless the README or code already hints at them.",
-          "",
-          "Return ONLY the JSON object. No prose before or after, no markdown code fences.",
-        ].join("\n");
-
-        let modelText: string;
-        try {
-          // Force primary tier here — analyzing a whole codebase + writing
-          // a structured doc + designing a questionnaire is firmly in the
-          // "needs the strong model" bucket; no need to spend the router
-          // round-trip to learn that.
-          const result = await orchestratedChatComplete({
-            task: "analyze a software project and produce structured documentation + clarifying questions",
-            messages: [
-              { role: "system", content: system },
-              {
-                role: "user",
-                content: `Repo URL: ${repo_url}\n\n${snapshot}`,
-              },
-            ],
-            temperature: 0.3,
-            max_tokens: 800,
-            forceTier: "primary",
-          });
-          modelText = result.text;
-        } catch (err) {
-          if (err instanceof NimError) {
-            return reply.code(502).send({
-              error: { code: err.code, message: err.message },
-            });
-          }
-          throw err;
-        }
-
-        const parsed = parseAnalyzeResponse(modelText);
-        if (parsed === null) {
-          return reply.code(502).send({
-            error: {
-              code: "model_output_malformed",
-              message:
-                "Nemotron returned output we couldn't parse as the expected JSON shape.",
-            },
-          });
-        }
-        setProjectContext({
-          repo_url,
-          documentation: parsed.documentation,
-          questions: parsed.questions,
-          // Reset answers — fresh analyze means stale answers are out.
-          answers: [],
+      const parsedUrl = parseGithubUrl(repoUrl);
+      if (parsedUrl === null) {
+        return reply.code(400).send({
+          error: {
+            code: "invalid_repo_url",
+            message:
+              "Repo URL must look like https://github.com/owner/repo.",
+          },
         });
-        log.info("onboarding analyze", {
-          repoUrl: repo_url,
-          summaryChars: parsed.documentation.summary.length,
-          questions: parsed.questions.length,
-        });
-        return {
-          documentation: parsed.documentation,
-          questions: parsed.questions,
-        };
-      } finally {
-        // Always clean up the clone dir, even on success — the cloned
-        // repo is no longer useful once we have the summary.
-        await rm(dir, { recursive: true, force: true }).catch(() => {});
       }
+
+      // Token precedence: per-request body token wins (lets the user
+      // experiment with a one-off PAT without saving it), then the stored
+      // OAuth token, then unauthenticated.
+      const token = requestToken ?? getGithubToken();
+      const fetchResult = await fetchReadme(
+        parsedUrl.owner,
+        parsedUrl.repo,
+        token,
+      );
+      if (!fetchResult.ok) {
+        return reply.code(fetchResult.status).send({
+          error: {
+            code: "github_fetch_failed",
+            message: fetchResult.message,
+          },
+        });
+      }
+
+      const system = [
+        "You are analyzing a software project to help its creator market it.",
+        "Read the supplied README and return STRICTLY VALID JSON with two top-level keys: `documentation` and `questions`.",
+        "",
+        "`documentation` is an object describing what you learned. Include the keys that make sense for this project. Strongly preferred keys:",
+        " - summary: short prose, what the project does and who it's for. Plain language, no marketing speak.",
+        " - key_features: array of short feature strings.",
+        " - tech_stack: array naming languages, frameworks, and key infra you saw mentioned.",
+        " - target_audience: one sentence on who this is for.",
+        " - voice_guidance: one sentence on the tone the assistant should use, inferred from the README's voice.",
+        " - things_to_avoid: array of claims or framings the assistant should NOT make. Empty array is fine if nothing comes to mind.",
+        "Omit any field where you genuinely have no signal; never invent.",
+        "",
+        "`questions` is an array of clarifying questions targeting things the README doesn't tell you. Ask as many or as few as you need to feel confident drafting on-brand replies, ranging from zero (you're already confident) up to roughly a dozen (README is opaque, audience unclear).",
+        "Each question is an object: { id, type, text, options? }",
+        " - `id` is a short stable slug like 'audience' or 'tone'. Unique within the array.",
+        " - `type` is either 'mcq' (single-choice with labeled options) or 'text' (free-form).",
+        " - `text` is the question shown to the user.",
+        " - `options` is required when type is 'mcq'. Each option is { label: short choice, description: one-sentence explainer }. Provide enough options to cover the realistic answers, typically 2-5.",
+        "Mix question types as you see fit. Prefer 'mcq' when you can enumerate likely answers because users answer those faster.",
+        "",
+        "Good question targets: target audience boundaries, what NOT to claim, the single feature to lead with, technical depth to assume, voice on different platforms, who the project is meant to compete with.",
+        "Avoid asking about pricing, business model, or roadmap unless the README already hints at them.",
+        "",
+        "Return ONLY the JSON object. No prose before or after, no markdown code fences.",
+      ].join("\n");
+
+      let modelText: string;
+      try {
+        // Force primary tier here: analyzing a project + producing
+        // structured docs + designing a questionnaire is firmly in the
+        // "needs the strong model" bucket; skip the router round-trip.
+        const result = await orchestratedChatComplete({
+          task: "analyze a software project README and produce structured documentation + clarifying questions",
+          messages: [
+            { role: "system", content: system },
+            {
+              role: "user",
+              content: `Repo URL: ${repoUrl}\n\nREADME:\n${fetchResult.readme}`,
+            },
+          ],
+          temperature: 0.3,
+          max_tokens: 800,
+          forceTier: "primary",
+        });
+        modelText = result.text;
+      } catch (err) {
+        if (err instanceof NimError) {
+          return reply.code(502).send({
+            error: { code: err.code, message: err.message },
+          });
+        }
+        throw err;
+      }
+
+      const parsed = parseAnalyzeResponse(modelText);
+      if (parsed === null) {
+        return reply.code(502).send({
+          error: {
+            code: "model_output_malformed",
+            message:
+              "Nemotron returned output we couldn't parse as the expected JSON shape.",
+          },
+        });
+      }
+      setProjectContext({
+        repo_url: repoUrl,
+        documentation: parsed.documentation,
+        questions: parsed.questions,
+        // Reset answers: fresh analyze means stale answers are out.
+        answers: [],
+      });
+      log.info("onboarding analyze", {
+        repoUrl,
+        summaryChars: parsed.documentation.summary.length,
+        questions: parsed.questions.length,
+      });
+      return {
+        documentation: parsed.documentation,
+        questions: parsed.questions,
+      };
     },
   );
 

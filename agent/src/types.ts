@@ -1,7 +1,7 @@
 // Shared types across the agent. Mirrors the SQLite columns in schema.sql,
 // but with TypeScript-native shapes (boolean for INTEGER 0/1, etc).
 
-export type Platform = "reddit" | "hn";
+export type Platform = "reddit" | "hn" | "bluesky";
 export type PostSource = "published" | "backfill" | "manual";
 
 // A row from the `posts` table, after coercing the SQLite INTEGER flag
@@ -42,7 +42,8 @@ export type Comment = {
   body: string | null;
   posted_at: number | null;
   fetched_at: number;
-  // Reddit returns a per-comment score; HN does not. NULL = unknown.
+  // Reddit returns a per-comment score; HN does not. Bluesky returns a
+  // likeCount per reply, which we map to score. NULL = unknown.
   score: number | null;
   // Parent comment's external_id; NULL for top-level replies to the post.
   parent_external_id: string | null;

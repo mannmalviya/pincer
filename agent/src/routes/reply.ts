@@ -25,7 +25,7 @@ type CommentJoinRow = {
   post_title: string | null;
   post_body: string | null;
   post_permalink: string;
-  platform: "reddit" | "hn";
+  platform: "reddit" | "hn" | "bluesky";
 };
 
 export function registerReplyRoute(app: FastifyInstance): void {
@@ -71,7 +71,12 @@ export function registerReplyRoute(app: FastifyInstance): void {
         });
       }
 
-      const platformName = row.platform === "reddit" ? "Reddit" : "Hacker News";
+      const platformName =
+        row.platform === "reddit"
+          ? "Reddit"
+          : row.platform === "hn"
+            ? "Hacker News"
+            : "Bluesky";
       const system = [
         `You are drafting a reply on ${platformName} on behalf of the original poster of a product launch.`,
         "Write in a conversational, first-person voice. No marketing fluff, no exclamation marks, no emojis.",
