@@ -32,6 +32,10 @@ import { motion, useReducedMotion } from "motion/react";
 type Platform = {
   name: string;
   icon: ComponentType<{ className?: string }>;
+  // X's logo IS the letter X, so rendering "🅧 X" reads as a stutter.
+  // Setting this skips the visible wordmark while keeping `name` available
+  // for the chip's aria-label, so screen readers still announce "X".
+  hideLabel?: boolean;
 };
 
 // Ordering picked for visual rhythm — Reddit + X anchor the front since
@@ -39,7 +43,7 @@ type Platform = {
 // it's the most "developer-tool" of the set.
 const PLATFORMS: Platform[] = [
   { name: "Reddit", icon: FaReddit },
-  { name: "X", icon: FaXTwitter },
+  { name: "X", icon: FaXTwitter, hideLabel: true },
   { name: "Hacker News", icon: FaHackerNews },
   { name: "Discord", icon: FaDiscord },
   { name: "Vercel", icon: SiVercel },
@@ -51,12 +55,26 @@ const PLATFORMS: Platform[] = [
 const FADE_MASK =
   "linear-gradient(to right, transparent 0%, black 8%, black 92%, transparent 100%)";
 
+// Number of times the platform list is repeated in the DOM. The seamless
+// loop translates by exactly one list-length (1/COPIES of the row's total
+// width), so we need enough copies that even at the wrap point the visible
+// window is still landing on real content. The required minimum is
+// roughly `⌈1 + viewport / one-list-width⌉`. With current chip sizing one
+// list is ~1100px, so 4 copies (~4400px total) cover monitors up to ~3300px
+// wide. Bump this if the row ever appears to "end" on an ultrawide.
+const COPIES = 4;
+const TRACK = Array.from({ length: COPIES }, () => PLATFORMS).flat();
+// Translating from 0 % to `LOOP_END` covers exactly one list — because the
+// list to the right of that point is an identical copy, the snap-back is
+// visually invisible.
+const LOOP_END = `-${100 / COPIES}%`;
+
 export function PlatformMarquee() {
   const reduceMotion = useReducedMotion();
 
   return (
-    <section className="border-t border-foreground/10 px-6 py-12">
-      <p className="font-sans text-xs uppercase tracking-wider text-foreground/50 text-center mb-7">
+    <section className="border-t border-foreground/10 px-6 py-16">
+      <p className="font-sans text-xs uppercase tracking-wider text-foreground/50 text-center mb-9">
         Works with
       </p>
 
@@ -65,11 +83,18 @@ export function PlatformMarquee() {
         style={{ maskImage: FADE_MASK, WebkitMaskImage: FADE_MASK }}
       >
         <motion.ul
-          className="flex gap-12 w-max text-foreground/55"
+          // Each chip carries its own trailing margin (`mr-20`) instead of
+          // the parent using flex `gap`. Why: flex-gap puts spacing *between*
+          // items only, so for n items there are n-1 gaps. The `-50%`
+          // translate assumes n equal periods of (chip + gap), so flex-gap
+          // leaves the loop half-a-gap short → visible snap each cycle.
+          // With margin-right on every chip, total width = n × (chip + gap)
+          // and -50% lands exactly on one cycle. Seamless.
+          className="flex w-max text-foreground/55"
           // `animate={undefined}` (the reduced-motion branch) leaves the row
-          // at its rest position. Otherwise we keyframe x from 0% to -50%
-          // of the row's own width — exactly one duplicated list-length.
-          animate={reduceMotion ? undefined : { x: ["0%", "-50%"] }}
+          // at its rest position. Otherwise we keyframe x from 0% to
+          // LOOP_END — exactly one list-length of the duplicated track.
+          animate={reduceMotion ? undefined : { x: ["0%", LOOP_END] }}
           transition={{
             duration: 30,
             ease: "linear",
@@ -77,13 +102,14 @@ export function PlatformMarquee() {
             repeatType: "loop",
           }}
         >
-          {[...PLATFORMS, ...PLATFORMS].map((p, i) => (
+          {TRACK.map((p, i) => (
             <PlatformChip
               key={i}
               platform={p}
-              // The duplicate half is filler for the seamless loop, so
-              // hide it from screen readers — the original five are the
-              // only ones we want announced.
+              // Only the first copy is real; the remaining COPIES-1 copies
+              // are filler so the row never runs out of content during the
+              // loop. Hide them from screen readers to keep the announced
+              // list clean.
               ariaHidden={i >= PLATFORMS.length}
             />
           ))}
@@ -103,11 +129,20 @@ function PlatformChip({
   const Icon = platform.icon;
   return (
     <li
-      className="flex items-center gap-3 shrink-0"
+      // mr-20 is the inter-chip spacing — see note on motion.ul about why
+      // it's a per-item margin instead of parent flex-gap.
+      className="flex items-center gap-4 shrink-0 mr-20"
+      // When the wordmark is hidden, the chip has no text content, so we
+      // expose the name to assistive tech via aria-label.
+      aria-label={platform.hideLabel ? platform.name : undefined}
       aria-hidden={ariaHidden || undefined}
     >
-      <Icon className="text-2xl" />
-      <span className="font-serif text-xl tracking-tight">{platform.name}</span>
+      <Icon className="text-4xl" />
+      {!platform.hideLabel && (
+        <span className="font-serif text-3xl tracking-tight">
+          {platform.name}
+        </span>
+      )}
     </li>
   );
 }

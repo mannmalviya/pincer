@@ -1,0 +1,131 @@
+"""Deterministic Reddit posting via Playwright against www.reddit.com (new UI).
+
+The new reddit submit page renders its form inside an <r-post-composer-form>
+custom element with an OPEN shadow root. Playwright's accessibility-aware
+locators (get_by_role) automatically pierce open shadow roots — meaning we
+can address title/body/submit by their ARIA role+name without writing any
+querySelector JS plumbing. This is the same mechanism a screen reader uses
+to navigate the page, so it's also the most semantically-stable selector.
+
+Why deterministic instead of LLM-driven:
+    We previously tried browser-use's Agent loop with Nemotron Super 120B and
+    Nano-Omni vision — Super was minutes-slow, Nano hallucinated visual state
+    and looped indefinitely on this same submit page. For platforms with stable
+    accessible markup, scripted automation is ~10x faster and 100% reproducible.
+
+Authentication:
+    We rely on the persistent Chromium profile at ./profile/ (populated once
+    via login.py). Cookies inside that directory are picked up by Playwright's
+    launch_persistent_context — no login flow at runtime.
+
+Anti-bot:
+    Reddit's WAF fingerprints Playwright's defaults (navigator.webdriver,
+    --enable-automation flag) and blocks instantly. We patch both via launch
+    args and an init script that runs before site JS gets to read the property.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from playwright.async_api import async_playwright
+
+
+# Profile directory lives at browser-sidecar/profile/, one level up from this
+# file. Compute the absolute path so we don't depend on CWD when uvicorn is
+# launched from elsewhere.
+PROFILE_DIR = str(Path(__file__).resolve().parent.parent / "profile")
+
+
+async def post_to_reddit(subreddit: str, title: str, body: str) -> str:
+    """Submit a self-text post to /r/<subreddit> and return its permalink URL.
+
+    Raises Playwright's TimeoutError if Reddit doesn't redirect us to a
+    /comments/ URL within 30s of clicking submit. That usually means a captcha,
+    shadowban, or approval-required subreddit. Let the caller surface it.
+
+    Args:
+        subreddit: e.g. "test", "SideProject" (no leading "r/").
+        title: post title (Reddit's hard limit is 300 chars).
+        body: self-text body (Reddit's hard limit is 40,000 chars).
+
+    Returns:
+        Permalink URL of the created post, e.g.
+        "https://www.reddit.com/r/test/comments/1abc23/my_title/".
+    """
+    # ?type=TEXT preselects the text-post mode so we skip the link/text tab
+    # toggle and land directly on the right form fields.
+    submit_url = f"https://www.reddit.com/r/{subreddit}/submit/?type=TEXT"
+
+    async with async_playwright() as p:
+        # launch_persistent_context() is the Playwright equivalent of
+        # `chrome --user-data-dir=...`. It launches Chromium with our saved
+        # cookies/localStorage in place, so we boot already-logged-in.
+        # headless=False during dev so we can visually confirm the post
+        # actually appears. Flip to True once this is bulletproof.
+        #
+        # Stealth knobs:
+        #   - ignore_default_args removes Playwright's --enable-automation flag
+        #     that flips a bunch of webdriver-related properties to true.
+        #   - --disable-blink-features=AutomationControlled is the canonical
+        #     "make navigator.webdriver undefined" Chrome flag.
+        ctx = await p.chromium.launch_persistent_context(
+            PROFILE_DIR,
+            headless=False,
+            ignore_default_args=["--enable-automation"],
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+
+        # Belt-and-suspenders: run a script in every new page BEFORE any site
+        # JS executes, redefining navigator.webdriver to return undefined.
+        # The Chrome flag above usually handles this but some bot-detection
+        # libraries probe the property descriptor directly.
+        await ctx.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+        )
+
+        try:
+            page = await ctx.new_page()
+            # domcontentloaded is enough — we have explicit waits below for the
+            # specific elements we need, no value in waiting for every analytics
+            # pixel to settle.
+            await page.goto(submit_url, wait_until="domcontentloaded")
+
+            # Accessibility-role locators. These pierce open shadow roots, so
+            # we don't need to know that the composer lives inside a custom
+            # element. The names ("Title", "Post body text field", "Post")
+            # come from the actual aria-label attributes Reddit sets — they
+            # match what browser-use logged earlier when it tried this page.
+            title_field = page.get_by_role("textbox", name="Title")
+            body_field = page.get_by_role("textbox", name="Post body text field")
+            post_button = page.get_by_role("button", name="Post")
+
+            # Wait for the composer to hydrate. The page may have loaded but
+            # the shadow DOM contents render asynchronously after client-side
+            # hydration. We probe the title field as a proxy for "form is ready".
+            await title_field.wait_for(state="visible", timeout=15_000)
+
+            # .fill() on Playwright works for both native inputs and
+            # contenteditable elements (it focuses, selects-all, types). The
+            # body field is a contenteditable div but .fill() handles it.
+            await title_field.fill(title)
+            await body_field.fill(body)
+
+            # Click submit AND wait for the resulting redirect in one atomic
+            # operation. expect_navigation() registers the listener BEFORE the
+            # click so we never miss the navigation due to a race. The URL
+            # regex /comments/ matches Reddit's success redirect; any other
+            # destination (errors, captcha) won't match and we time out cleanly.
+            async with page.expect_navigation(
+                url=re.compile(r"/comments/"),
+                timeout=30_000,
+            ):
+                await post_button.click()
+
+            return page.url
+        finally:
+            # Close cleanly so Chromium flushes any updated cookies (e.g. a
+            # rotated session token) back to the profile directory before
+            # the process exits.
+            await ctx.close()

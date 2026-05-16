@@ -8,3 +8,10 @@ __pycache__/
 
 # uv / pip caches
 .uv-cache/
+
+# Secrets — NIM API key, etc. Never commit.
+.env
+
+# Persistent Chromium profile (cookies, localStorage from manual login).
+# Contains your real session tokens — never commit.
+profile/

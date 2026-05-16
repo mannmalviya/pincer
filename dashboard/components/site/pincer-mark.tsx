@@ -14,34 +14,36 @@ export function PincerMark({ className }: { className?: string }) {
       aria-hidden
     >
       <rect width="32" height="32" fill="#ff6600" />
-      <path
-        d="M 7 7 Q 16 7 16 14"
-        fill="none"
-        stroke="#ffffff"
-        strokeWidth="2.7"
-        strokeLinecap="round"
-      />
-      <path
-        d="M 25 7 Q 16 7 16 14"
-        fill="none"
-        stroke="#ffffff"
-        strokeWidth="2.7"
-        strokeLinecap="round"
-      />
-      <path
-        d="M 7 25 Q 16 25 16 18"
-        fill="none"
-        stroke="#ffffff"
-        strokeWidth="2.7"
-        strokeLinecap="round"
-      />
-      <path
-        d="M 25 25 Q 16 25 16 18"
-        fill="none"
-        stroke="#ffffff"
-        strokeWidth="2.7"
-        strokeLinecap="round"
-      />
+      <g transform="rotate(90 16 16)">
+        <path
+          d="M 7 7 Q 16 7 16 14"
+          fill="none"
+          stroke="#ffffff"
+          strokeWidth="2.7"
+          strokeLinecap="round"
+        />
+        <path
+          d="M 25 7 Q 16 7 16 14"
+          fill="none"
+          stroke="#ffffff"
+          strokeWidth="2.7"
+          strokeLinecap="round"
+        />
+        <path
+          d="M 7 25 Q 16 25 16 18"
+          fill="none"
+          stroke="#ffffff"
+          strokeWidth="2.7"
+          strokeLinecap="round"
+        />
+        <path
+          d="M 25 25 Q 16 25 16 18"
+          fill="none"
+          stroke="#ffffff"
+          strokeWidth="2.7"
+          strokeLinecap="round"
+        />
+      </g>
     </svg>
   );
 }

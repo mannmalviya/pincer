@@ -1,10 +1,14 @@
 [project]
 name = "browser-sidecar"
 version = "0.1.0"
-description = "Add your description here"
+description = "Pincer browser-automation sidecar: FastAPI service wrapping browser-use, driven by NIM (Nemotron). Receives natural-language tasks over HTTP from the Node agent and runs them against a real Chromium."
 requires-python = ">=3.13"
 dependencies = [
-    "browser-use>=0.12.6",
     "fastapi>=0.136.1",
     "uvicorn[standard]>=0.47.0",
+    # Playwright drives both the one-time login flow (login.py) and the
+    # deterministic per-platform posting automations. Single browser stack
+    # end-to-end so login and runtime share an identical fingerprint —
+    # critical for not getting flagged by Reddit's WAF between sessions.
+    "playwright>=1.50.0",
 ]

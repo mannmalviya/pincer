@@ -25,7 +25,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Pincer — Get a grip on your launch",
+  title: "Pincer",
   description:
     "Multi-platform launch agent. Draft, post, monitor, and triage comments across Reddit and Discord from one local dashboard.",
 };
@@ -41,7 +41,16 @@ export default function RootLayout({
       className={`${inter.variable} ${fraunces.variable} ${geistMono.variable} h-full antialiased`}
       suppressHydrationWarning
     >
-      <body className="min-h-full flex flex-col font-sans">{children}</body>
+      {/* suppressHydrationWarning on <body> too: extensions like Grammarly
+          inject data-* attributes (data-new-gr-c-s-check-loaded, data-gr-
+          ext-installed) onto <body> before React hydrates, which causes a
+          hydration mismatch otherwise. */}
+      <body
+        className="min-h-full flex flex-col font-sans"
+        suppressHydrationWarning
+      >
+        {children}
+      </body>
     </html>
   );
 }

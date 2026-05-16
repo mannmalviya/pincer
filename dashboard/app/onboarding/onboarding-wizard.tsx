@@ -15,32 +15,28 @@ import {
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
 
 // ---------------------------------------------------------------------------
-// OnboardingWizard — dynamic multi-platform setup flow.
+// OnboardingWizard — two-step setup flow.
 //
 // Step 0  — "Where do you want to launch?" multi-select across the six
-//           supported platforms. Only the picked ones contribute steps to
-//           the rest of the wizard, so a user marketing on just Reddit + X
-//           never sees the Instagram or TikTok screens.
+//           supported platforms. The selection drives which login tabs
+//           open in step 1.
 //
-// Step 1..N — One credential card per selected platform, in PLATFORM_ORDER.
-//           Reddit and Discord have real fields (matched to the agent's
-//           snoowrap / discord.js wiring in PLAN.md). The others are stubs
-//           with plausible-looking fields; they'll get wired up to OpenClaw
-//           skills in a later pass.
+// Step 1  — Browser login. Calls the local Playwright sidecar
+//           (browser-sidecar/app.py) to spawn a Chromium window with one
+//           login tab per selected platform. The user signs in manually,
+//           then triggers /login/finish to save cookies to the persistent
+//           profile. Future post calls reuse those cookies.
 //
-// Submission POSTs collected credentials to /api/accounts (not implemented
-// yet — call is swallowed) and then routes to /dashboard, so the UI can be
-// validated end-to-end before the backend lands.
+// Sidecar must be running at http://localhost:9000 before step 1 starts.
+// Reachable as part of the dev workflow: `uv run uvicorn app:app --port 9000`
+// from the browser-sidecar/ directory.
 // ---------------------------------------------------------------------------
 
-// The canonical list of platforms Pincer can target. Order here drives the
-// order steps appear in. Add a new platform by extending this union + the
-// PLATFORM_META + INITIAL_CREDS + platformValid map below.
+// The canonical list of platforms Pincer can target. Add a new one by
+// extending this union, the PLATFORM_META map below, AND the LOGIN_URLS map
+// in browser-sidecar/app.py.
 type Platform = "reddit" | "hn" | "discord" | "x" | "instagram" | "tiktok";
 
 const PLATFORM_ORDER: Platform[] = [
@@ -52,7 +48,7 @@ const PLATFORM_ORDER: Platform[] = [
   "tiktok",
 ];
 
-// Display metadata for the selection step + step indicator.
+// Display metadata for the selection step + login preview.
 //
 // `icon`  — react-icons component for the brand glyph.
 // `color` — official brand color, passed straight as inline `color` so the
@@ -60,6 +56,10 @@ const PLATFORM_ORDER: Platform[] = [
 //           X is intentionally left as `currentColor` so it inherits the
 //           foreground (black on light, white on dark) — X has no fixed
 //           accent color.
+// `badge` — small uppercase tag for platforms that are stubs / coming soon.
+//           Currently Reddit + HN have working post implementations; the
+//           others can be selected and logged into, but posting from them
+//           is wired in a later pass.
 type PlatformMeta = {
   label: string;
   tagline: string;
@@ -71,233 +71,104 @@ type PlatformMeta = {
 const PLATFORM_META: Record<Platform, PlatformMeta> = {
   reddit: {
     label: "Reddit",
-    tagline: "Submit to subreddits, monitor comments via snoowrap.",
+    tagline: "Submit to subreddits, monitor comments and karma over time.",
     icon: FaReddit,
     color: "#FF4500",
   },
   hn: {
     label: "Hacker News",
-    tagline: "Read-only analytics via Algolia. Posting wired later.",
-    badge: "read-only",
+    tagline: "Show HN / Ask HN submissions, score and comment polling.",
     icon: FaHackerNews,
     color: "#FF6600",
   },
   discord: {
     label: "Discord",
-    tagline: "Send to a server channel via a bot you control.",
+    tagline: "Announce launches to your server.",
+    badge: "soon",
     icon: FaDiscord,
     color: "#5865F2",
   },
   x: {
     label: "X",
-    tagline: "Post via the v2 API. Free tier rate-limited.",
-    badge: "stub",
+    tagline: "Threads and posts at launch.",
+    badge: "soon",
     icon: FaXTwitter,
     color: "currentColor",
   },
   instagram: {
     label: "Instagram",
-    tagline: "Business accounts via the Meta Graph API.",
-    badge: "stub",
+    tagline: "Posts and Stories from a Business account.",
+    badge: "soon",
     icon: FaInstagram,
     color: "#E4405F",
   },
   tiktok: {
     label: "TikTok",
     tagline: "Content Posting API. Sandbox by default.",
-    badge: "stub",
+    badge: "soon",
     icon: FaTiktok,
     color: "currentColor",
   },
 };
 
-// Full credential bag. Always carries every platform so we don't have to
-// narrow types per step — fields not relevant to the user's selection are
-// simply never edited and skipped at submit time.
-type CredsByPlatform = {
-  reddit: {
-    clientId: string;
-    clientSecret: string;
-    username: string;
-    password: string;
-    userAgent: string;
-  };
-  hn: {
-    username: string;
-  };
-  discord: {
-    botToken: string;
-    channelId: string;
-  };
-  x: {
-    apiKey: string;
-    apiSecret: string;
-  };
-  instagram: {
-    accessToken: string;
-  };
-  tiktok: {
-    clientKey: string;
-    accessToken: string;
-  };
-};
-
-const INITIAL_CREDS: CredsByPlatform = {
-  reddit: {
-    clientId: "",
-    clientSecret: "",
-    username: "",
-    password: "",
-    userAgent: "pincer/0.1 (by /u/yourname)",
-  },
-  hn: {
-    username: "",
-  },
-  discord: {
-    botToken: "",
-    channelId: "",
-  },
-  x: {
-    apiKey: "",
-    apiSecret: "",
-  },
-  instagram: {
-    accessToken: "",
-  },
-  tiktok: {
-    clientKey: "",
-    accessToken: "",
-  },
-};
-
-// Per-platform "are all required fields filled?" check. Keeps the Next
-// button's enabled-logic out of each step's render code.
-function platformValid<P extends Platform>(
-  platform: P,
-  creds: CredsByPlatform[P],
-): boolean {
-  switch (platform) {
-    case "reddit": {
-      const c = creds as CredsByPlatform["reddit"];
-      return Boolean(
-        c.clientId.trim() &&
-          c.clientSecret.trim() &&
-          c.username.trim() &&
-          c.password.trim() &&
-          c.userAgent.trim(),
-      );
-    }
-    case "hn": {
-      // HN posting isn't implemented yet — accept the step even with an
-      // empty username so the user isn't blocked.
-      return true;
-    }
-    case "discord": {
-      const c = creds as CredsByPlatform["discord"];
-      return Boolean(c.botToken.trim() && c.channelId.trim());
-    }
-    case "x": {
-      const c = creds as CredsByPlatform["x"];
-      return Boolean(c.apiKey.trim() && c.apiSecret.trim());
-    }
-    case "instagram": {
-      const c = creds as CredsByPlatform["instagram"];
-      return Boolean(c.accessToken.trim());
-    }
-    case "tiktok": {
-      const c = creds as CredsByPlatform["tiktok"];
-      return Boolean(c.clientKey.trim() && c.accessToken.trim());
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// PlatformCardTitle — shared title row for the per-platform credential steps.
-// Renders the platform's brand glyph (in its official colour) next to the
-// step's heading, so each step instantly reads as e.g. "🔴 Reddit" instead of
-// a bare wordmark. Centralised here so all six steps stay visually identical.
-// ---------------------------------------------------------------------------
-function PlatformCardTitle({ platform }: { platform: Platform }) {
-  const meta = PLATFORM_META[platform];
-  const Icon = meta.icon;
-  return (
-    <CardTitle className="font-serif text-2xl tracking-tight flex items-center gap-3">
-      <Icon
-        className="shrink-0 text-2xl"
-        style={{ color: meta.color }}
-        aria-hidden
-      />
-      {meta.label}
-    </CardTitle>
-  );
-}
+// Base URL for the local browser-sidecar. Hardcoded for dev — when we
+// deploy, this becomes an env var that the laptop-side worker reads.
+const SIDECAR_BASE = "http://localhost:9000";
 
 export function OnboardingWizard() {
   const router = useRouter();
 
-  // Which platforms the user has chosen (step 0 output). Order in this
-  // array doesn't matter for navigation — we always walk PLATFORM_ORDER.
+  // Which platforms the user has chosen on step 0.
   const [selected, setSelected] = useState<Platform[]>([]);
 
-  // All credentials, regardless of selection. See note on CredsByPlatform.
-  const [creds, setCreds] = useState<CredsByPlatform>(INITIAL_CREDS);
+  // Whether the user has successfully completed the browser-login step.
+  // Reset to false any time `selected` changes — the cookies we saved are
+  // for a specific set of platforms; if that set changes, the user needs
+  // to log in again to cover the new ones.
+  const [loginComplete, setLoginComplete] = useState(false);
 
-  // Current step index. 0 is always the selection step; 1..N walk
-  // PLATFORM_ORDER filtered by `selected`.
+  // Step navigation. Steps are just two: 'select' then 'browser-login'.
+  // We never skip 'browser-login' because every platform Pincer supports
+  // needs cookies (we use browser automation, not API tokens, everywhere).
   const [stepIndex, setStepIndex] = useState(0);
   const [submitting, setSubmitting] = useState(false);
 
-  // The actual step list for this run. "select" is the first step; the
-  // rest are the selected platforms in canonical order.
-  const steps: Array<"select" | Platform> = [
+  const steps: Array<"select" | "browser-login"> = [
     "select",
-    ...PLATFORM_ORDER.filter((p) => selected.includes(p)),
+    ...(selected.length > 0 ? (["browser-login"] as const) : []),
   ];
 
   const currentStep = steps[stepIndex];
   const isLastStep = stepIndex === steps.length - 1;
 
-  // Selection step is valid once anything is checked; per-platform steps
-  // use the platformValid check. We type-narrow inside platformValid by
-  // passing both platform key and the matching creds slice.
+  // Selection step is valid once anything is checked; login step is valid
+  // once /login/finish returned ok.
   const currentValid =
     currentStep === "select"
       ? selected.length > 0
-      : platformValid(currentStep, creds[currentStep]);
+      : currentStep === "browser-login"
+        ? loginComplete
+        : false;
 
   function togglePlatform(p: Platform) {
     setSelected((cur) =>
       cur.includes(p) ? cur.filter((x) => x !== p) : [...cur, p],
     );
-  }
-
-  // Generic "update one field on one platform" helper so step components
-  // don't have to repeat the immutable-update boilerplate.
-  function updateCreds<P extends Platform, K extends keyof CredsByPlatform[P]>(
-    platform: P,
-    key: K,
-    value: CredsByPlatform[P][K],
-  ) {
-    setCreds((prev) => ({
-      ...prev,
-      [platform]: { ...prev[platform], [key]: value },
-    }));
+    // Selection changed → invalidate any prior login. If the user logged
+    // into Reddit + HN then went back and added Discord, they need to log
+    // into Discord now too. Forcing a re-login keeps the saved profile
+    // consistent with the user's current intent.
+    setLoginComplete(false);
   }
 
   async function handleFinish() {
     setSubmitting(true);
     try {
-      // Only ship the creds for platforms the user actually selected. The
-      // backend doesn't exist yet — failure is swallowed so dev can proceed.
-      const payload = {
-        platforms: selected,
-        creds: Object.fromEntries(selected.map((p) => [p, creds[p]])),
-      };
-      await fetch("/api/accounts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      }).catch(() => {});
+      // No backend persistence yet — the sidecar already wrote the cookie
+      // profile to disk during /login/finish, which is the only piece of
+      // state that actually matters for posting. Future work: POST the
+      // selected platforms to the Node agent so it knows which ones to
+      // include in stats and the comment-watch loop.
       router.push("/dashboard");
     } finally {
       setSubmitting(false);
@@ -309,48 +180,14 @@ export function OnboardingWizard() {
       <StepIndicator steps={steps} current={stepIndex} />
 
       {currentStep === "select" && (
-        <SelectStep
-          selected={selected}
-          onToggle={togglePlatform}
-        />
+        <SelectStep selected={selected} onToggle={togglePlatform} />
       )}
 
-      {currentStep === "reddit" && (
-        <RedditStep
-          value={creds.reddit}
-          onChange={(k, v) => updateCreds("reddit", k, v)}
-        />
-      )}
-
-      {currentStep === "hn" && (
-        <HackerNewsStep
-          value={creds.hn}
-          onChange={(k, v) => updateCreds("hn", k, v)}
-        />
-      )}
-
-      {currentStep === "discord" && (
-        <DiscordStep
-          value={creds.discord}
-          onChange={(k, v) => updateCreds("discord", k, v)}
-        />
-      )}
-
-      {currentStep === "x" && (
-        <XStep value={creds.x} onChange={(k, v) => updateCreds("x", k, v)} />
-      )}
-
-      {currentStep === "instagram" && (
-        <InstagramStep
-          value={creds.instagram}
-          onChange={(k, v) => updateCreds("instagram", k, v)}
-        />
-      )}
-
-      {currentStep === "tiktok" && (
-        <TikTokStep
-          value={creds.tiktok}
-          onChange={(k, v) => updateCreds("tiktok", k, v)}
+      {currentStep === "browser-login" && (
+        <BrowserLoginStep
+          platforms={selected}
+          loginComplete={loginComplete}
+          onLoginComplete={() => setLoginComplete(true)}
         />
       )}
 
@@ -370,10 +207,7 @@ export function OnboardingWizard() {
         )}
 
         {isLastStep ? (
-          <Button
-            onClick={handleFinish}
-            disabled={!currentValid || submitting}
-          >
+          <Button onClick={handleFinish} disabled={!currentValid || submitting}>
             {submitting ? "Saving..." : "Finish setup →"}
           </Button>
         ) : (
@@ -391,22 +225,26 @@ export function OnboardingWizard() {
 
 // ---------------------------------------------------------------------------
 // Step indicator — small mono dotline above the active card.
-// Renders "01 · Select", "02 · Reddit", etc. Highlights the active step,
+// Renders "01 · Select", "02 · Login", etc. Highlights the active step,
 // fades done/upcoming.
 // ---------------------------------------------------------------------------
 function StepIndicator({
   steps,
   current,
 }: {
-  steps: Array<"select" | Platform>;
+  steps: Array<"select" | "browser-login">;
   current: number;
 }) {
+  const stepLabel: Record<"select" | "browser-login", string> = {
+    select: "Select",
+    "browser-login": "Login",
+  };
+
   return (
     <ol className="flex items-center gap-3 flex-wrap text-xs font-mono text-foreground/40">
       {steps.map((s, i) => {
         const active = i === current;
         const done = i < current;
-        const label = s === "select" ? "Select" : PLATFORM_META[s].label;
         return (
           <li key={`${s}-${i}`} className="flex items-center gap-3">
             <span
@@ -418,7 +256,7 @@ function StepIndicator({
                     : "text-foreground/40"
               }
             >
-              {String(i + 1).padStart(2, "0")} · {label}
+              {String(i + 1).padStart(2, "0")} · {stepLabel[s]}
             </span>
             {i < steps.length - 1 && (
               <span className="w-6 h-px bg-foreground/15" aria-hidden />
@@ -511,381 +349,222 @@ function SelectStep({
 }
 
 // ---------------------------------------------------------------------------
-// Step — Reddit credentials.
-// snoowrap uses password-grant auth: all five fields are required.
+// Step 1 — browser-login.
+//
+// Drives the sidecar's /login/start and /login/finish endpoints. The user
+// goes through three states in order:
+//
+//   idle    — initial. "Open Chromium" button visible.
+//   waiting — /login/start succeeded; Chromium is open with login tabs.
+//             "I'm done logging in" button visible. User logs in manually
+//             in the Chromium window during this state.
+//   done    — /login/finish succeeded. Session cookies are persisted.
+//             The wizard footer's "Finish setup" button enables.
+//
+// Errors at any step return us to the previous interactive state with an
+// inline message — never silently swallow.
 // ---------------------------------------------------------------------------
-function RedditStep({
-  value,
-  onChange,
+function BrowserLoginStep({
+  platforms,
+  loginComplete,
+  onLoginComplete,
 }: {
-  value: CredsByPlatform["reddit"];
-  onChange: <K extends keyof CredsByPlatform["reddit"]>(
-    key: K,
-    val: CredsByPlatform["reddit"][K],
-  ) => void;
+  platforms: Platform[];
+  loginComplete: boolean;
+  onLoginComplete: () => void;
 }) {
+  const [status, setStatus] = useState<
+    "idle" | "starting-sidecar" | "opening" | "waiting" | "finishing"
+  >("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  async function openLogin() {
+    setError(null);
+
+    // Step 1: ensure the Python sidecar is running. /api/sidecar/start is a
+    // Next.js route handler that probes /health and spawns uvicorn if needed.
+    // Idempotent — does nothing if the sidecar is already up.
+    setStatus("starting-sidecar");
+    try {
+      const startRes = await fetch("/api/sidecar/start", { method: "POST" });
+      const startData = await startRes.json();
+      if (!startData.ok) {
+        setError(startData.error || "Couldn't start the browser sidecar.");
+        setStatus("idle");
+        return;
+      }
+    } catch {
+      setError(
+        "Couldn't reach the dashboard's sidecar control endpoint. " +
+          "Make sure you're running this from `npm run dev` in the dashboard/ folder.",
+      );
+      setStatus("idle");
+      return;
+    }
+
+    // Step 2: ask the sidecar to open Chromium with login tabs for the
+    // user's selected platforms. The Chromium window stays open until
+    // finishLogin() calls /login/finish.
+    setStatus("opening");
+    try {
+      const res = await fetch(`${SIDECAR_BASE}/login/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ platforms }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setError(data.error || "Failed to open Chromium");
+        setStatus("idle");
+        return;
+      }
+      setStatus("waiting");
+    } catch {
+      setError(
+        "Sidecar started but didn't respond to the login request. " +
+          "Check the dev server terminal for sidecar errors.",
+      );
+      setStatus("idle");
+    }
+  }
+
+  async function finishLogin() {
+    setError(null);
+    setStatus("finishing");
+    try {
+      const res = await fetch(`${SIDECAR_BASE}/login/finish`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setError(data.error || "Failed to save login session");
+        setStatus("waiting");
+        return;
+      }
+      onLoginComplete();
+      // Leave status as "finishing" — parent's loginComplete=true will
+      // change which UI block renders below.
+    } catch {
+      setError("Couldn't save the login session.");
+      setStatus("waiting");
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
-        <PlatformCardTitle platform="reddit" />
+        <CardTitle className="font-serif text-2xl tracking-tight">
+          Log in to your platforms
+        </CardTitle>
         <CardDescription>
-          Create a <span className="font-mono">script</span>-type app at{" "}
-          <a
-            href="https://www.reddit.com/prefs/apps"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline underline-offset-4 hover:text-foreground"
-          >
-            reddit.com/prefs/apps
-          </a>
-          . Brand new accounts get auto-flagged by popular subreddits — test
-          against <span className="font-mono">r/test</span> or a sub you
-          moderate.
+          We&apos;ll open a new Chromium window with one login tab per platform
+          you selected.
+        </CardDescription>
+        <CardDescription>
+          Sign in like you normally would. If you don&apos;t have an account
+          yet, sign up.
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <Field
-          id="reddit-client-id"
-          label="Client ID"
-          value={value.clientId}
-          onChange={(v) => onChange("clientId", v)}
-          placeholder="abc123..."
-          mono
-        />
-        <Field
-          id="reddit-client-secret"
-          label="Client secret"
-          type="password"
-          value={value.clientSecret}
-          onChange={(v) => onChange("clientSecret", v)}
-          placeholder="••••••••••••"
-          mono
-        />
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Field
-            id="reddit-username"
-            label="Username"
-            value={value.username}
-            onChange={(v) => onChange("username", v)}
-            placeholder="your_bot_account"
-          />
-          <Field
-            id="reddit-password"
-            label="Password"
-            type="password"
-            value={value.password}
-            onChange={(v) => onChange("password", v)}
-            placeholder="••••••••"
-          />
+      <CardContent className="flex flex-col gap-6">
+        {/* Account-choice callout. Tinted box, brand-colored, so the
+            "which account?" guidance reads as actionable advice rather
+            than blending into the rest of the description copy. */}
+        <div className="rounded-lg p-3 bg-[color:var(--brand)]/10 border border-[color:var(--brand)]/25 text-sm text-foreground/75 leading-relaxed">
+          If you don&apos;t have an account yet, sign up. Use the account that
+          represents the product you&apos;re marketing, since that&apos;s the
+          one Pincer will post from.
         </div>
-        <Field
-          id="reddit-user-agent"
-          label="User agent"
-          value={value.userAgent}
-          onChange={(v) => onChange("userAgent", v)}
-          placeholder="pincer/0.1 (by /u/yourname)"
-          mono
-          hint="Reddit requires a unique user-agent string per app."
-        />
-        <Separator className="my-2" />
+
+        {/* The set of platforms whose login tabs will be opened. Shows the
+            user exactly what they're about to see in the Chromium window. */}
+        <ul className="flex flex-col gap-2">
+          {platforms.map((p) => {
+            const meta = PLATFORM_META[p];
+            const Icon = meta.icon;
+            return (
+              <li
+                key={p}
+                className="flex items-center gap-3 p-3 rounded-lg border border-foreground/10 bg-foreground/[0.02]"
+              >
+                <Icon
+                  className="shrink-0 text-xl"
+                  style={{ color: meta.color }}
+                  aria-hidden
+                />
+                <div className="flex flex-col min-w-0">
+                  <span className="font-medium tracking-tight">
+                    {meta.label}
+                  </span>
+                  <span className="text-xs text-foreground/55 leading-relaxed">
+                    Sign in (or create an account) in the tab that opens.
+                  </span>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+
+        {/* Trust note — typed once here so the user understands what we save
+            vs. what stays inside the platform. */}
+        <p className="text-sm text-foreground/65 leading-relaxed border-l-2 border-[color:var(--brand)] pl-3">
+          Your password is typed directly into each platform&apos;s own
+          login page. Pincer never sees it. We only save the session
+          cookies the platform gives your browser, so future posts can
+          run without re-prompting.
+        </p>
+
+        {/* Action / status area. The button visible depends on `status`. */}
+        <div className="flex flex-col gap-3">
+          {!loginComplete && status === "idle" && (
+            <Button onClick={openLogin} className="self-start">
+              Open Chromium →
+            </Button>
+          )}
+
+          {status === "starting-sidecar" && (
+            <Button disabled className="self-start">
+              Starting sidecar...
+            </Button>
+          )}
+
+          {status === "opening" && (
+            <Button disabled className="self-start">
+              Opening Chromium...
+            </Button>
+          )}
+
+          {status === "waiting" && (
+            <>
+              <p className="text-sm text-foreground/85">
+                Chromium is open. Log in to each tab, then click below
+                to save and close.
+              </p>
+              <Button onClick={finishLogin} className="self-start">
+                I&apos;m done logging in →
+              </Button>
+            </>
+          )}
+
+          {status === "finishing" && !loginComplete && (
+            <Button disabled className="self-start">
+              Saving session...
+            </Button>
+          )}
+
+          {loginComplete && (
+            <p className="text-sm text-foreground/85 font-medium">
+              Session saved. Click &ldquo;Finish setup&rdquo; below to
+              continue to the dashboard.
+            </p>
+          )}
+
+          {error && (
+            <p className="text-sm text-red-700 dark:text-red-400 leading-relaxed">
+              {error}
+            </p>
+          )}
+        </div>
       </CardContent>
     </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Step — Hacker News (read-only stub).
-// HN has no official write API. We collect the username only so we can tag
-// the user in future Browser-Harness driven submissions; everything else
-// will come from the Algolia search API at runtime.
-// ---------------------------------------------------------------------------
-function HackerNewsStep({
-  value,
-  onChange,
-}: {
-  value: CredsByPlatform["hn"];
-  onChange: <K extends keyof CredsByPlatform["hn"]>(
-    key: K,
-    val: CredsByPlatform["hn"][K],
-  ) => void;
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <PlatformCardTitle platform="hn" />
-        <CardDescription>
-          HN has no official write API in v0 — Pincer reads upvotes and
-          comment counts via Algolia. Posting plugs in later via Browser
-          Harness.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <Field
-          id="hn-username"
-          label="Username (optional)"
-          value={value.username}
-          onChange={(v) => onChange("username", v)}
-          placeholder="pg"
-          mono
-          hint="Used for analytics filtering once posting lands. Leave blank if you're not sure."
-        />
-        <Separator className="my-2" />
-      </CardContent>
-    </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Step — Discord.
-// Bot token + channel ID is the minimum to send a message via discord.js.
-// ---------------------------------------------------------------------------
-function DiscordStep({
-  value,
-  onChange,
-}: {
-  value: CredsByPlatform["discord"];
-  onChange: <K extends keyof CredsByPlatform["discord"]>(
-    key: K,
-    val: CredsByPlatform["discord"][K],
-  ) => void;
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <PlatformCardTitle platform="discord" />
-        <CardDescription>
-          Create a bot at{" "}
-          <a
-            href="https://discord.com/developers/applications"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline underline-offset-4 hover:text-foreground"
-          >
-            discord.com/developers
-          </a>
-          , invite it to your server, then paste its token and the channel
-          ID Pincer should post to.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <Field
-          id="discord-bot-token"
-          label="Bot token"
-          type="password"
-          value={value.botToken}
-          onChange={(v) => onChange("botToken", v)}
-          placeholder="MTE••••••••"
-          mono
-        />
-        <Field
-          id="discord-channel-id"
-          label="Channel ID"
-          value={value.channelId}
-          onChange={(v) => onChange("channelId", v)}
-          placeholder="1234567890123456789"
-          mono
-          hint="Right-click a channel in Discord (with Developer Mode on) → Copy Channel ID."
-        />
-        <Separator className="my-2" />
-      </CardContent>
-    </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Step — X (stub).
-// API key + secret are the v2 app credentials. The free tier is heavily
-// rate-limited; we'll surface that in the UI later.
-// ---------------------------------------------------------------------------
-function XStep({
-  value,
-  onChange,
-}: {
-  value: CredsByPlatform["x"];
-  onChange: <K extends keyof CredsByPlatform["x"]>(
-    key: K,
-    val: CredsByPlatform["x"][K],
-  ) => void;
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <PlatformCardTitle platform="x" />
-        <CardDescription>
-          Create a v2 app at{" "}
-          <a
-            href="https://developer.x.com/en/portal/dashboard"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline underline-offset-4 hover:text-foreground"
-          >
-            developer.x.com
-          </a>
-          . Wired to the agent in a later pass — the form here is a stub.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <Field
-          id="x-api-key"
-          label="API key"
-          value={value.apiKey}
-          onChange={(v) => onChange("apiKey", v)}
-          placeholder="abc123..."
-          mono
-        />
-        <Field
-          id="x-api-secret"
-          label="API secret"
-          type="password"
-          value={value.apiSecret}
-          onChange={(v) => onChange("apiSecret", v)}
-          placeholder="••••••••••••"
-          mono
-        />
-        <Separator className="my-2" />
-      </CardContent>
-    </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Step — Instagram (stub).
-// Business accounts can post via a long-lived access token from the Meta
-// Graph API. Single-field stub for now.
-// ---------------------------------------------------------------------------
-function InstagramStep({
-  value,
-  onChange,
-}: {
-  value: CredsByPlatform["instagram"];
-  onChange: <K extends keyof CredsByPlatform["instagram"]>(
-    key: K,
-    val: CredsByPlatform["instagram"][K],
-  ) => void;
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <PlatformCardTitle platform="instagram" />
-        <CardDescription>
-          Posting requires an Instagram Business account linked to a
-          Facebook Page, then a long-lived access token from the Meta Graph
-          API. Stubbed for now — the field below is captured but not used.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <Field
-          id="ig-access-token"
-          label="Long-lived access token"
-          type="password"
-          value={value.accessToken}
-          onChange={(v) => onChange("accessToken", v)}
-          placeholder="EAAG••••••••"
-          mono
-        />
-        <Separator className="my-2" />
-      </CardContent>
-    </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Step — TikTok (stub).
-// The Content Posting API uses a client key + access token. Sandbox mode
-// is the default and most permissive for early testing.
-// ---------------------------------------------------------------------------
-function TikTokStep({
-  value,
-  onChange,
-}: {
-  value: CredsByPlatform["tiktok"];
-  onChange: <K extends keyof CredsByPlatform["tiktok"]>(
-    key: K,
-    val: CredsByPlatform["tiktok"][K],
-  ) => void;
-}) {
-  return (
-    <Card>
-      <CardHeader>
-        <PlatformCardTitle platform="tiktok" />
-        <CardDescription>
-          Register a Content Posting API app at{" "}
-          <a
-            href="https://developers.tiktok.com/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline underline-offset-4 hover:text-foreground"
-          >
-            developers.tiktok.com
-          </a>
-          . Stubbed for now — fields are captured but not used.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <Field
-          id="tiktok-client-key"
-          label="Client key"
-          value={value.clientKey}
-          onChange={(v) => onChange("clientKey", v)}
-          placeholder="aw1234..."
-          mono
-        />
-        <Field
-          id="tiktok-access-token"
-          label="Access token"
-          type="password"
-          value={value.accessToken}
-          onChange={(v) => onChange("accessToken", v)}
-          placeholder="••••••••••••"
-          mono
-        />
-        <Separator className="my-2" />
-      </CardContent>
-    </Card>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Field — labeled input with optional hint line. Used throughout the wizard
-// to keep field spacing/styling consistent.
-// ---------------------------------------------------------------------------
-function Field({
-  id,
-  label,
-  value,
-  onChange,
-  type = "text",
-  placeholder,
-  mono = false,
-  hint,
-}: {
-  id: string;
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  type?: "text" | "password";
-  placeholder?: string;
-  mono?: boolean;
-  hint?: string;
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <Label htmlFor={id} className="text-sm">
-        {label}
-      </Label>
-      <Input
-        id={id}
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className={mono ? "font-mono text-sm" : undefined}
-        autoComplete="off"
-        spellCheck={false}
-      />
-      {hint && (
-        <p className="text-xs text-foreground/50 leading-relaxed">{hint}</p>
-      )}
-    </div>
   );
 }

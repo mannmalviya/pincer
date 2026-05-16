@@ -18,23 +18,24 @@ import { OnboardingWizard } from "./onboarding-wizard";
 export default function OnboardingPage() {
   return (
     <main className="font-sans flex-1 flex flex-col">
-      {/* Top bar — back to landing */}
-      <header className="px-6 py-5 border-b border-foreground/10">
-        <div className="max-w-3xl mx-auto flex items-center justify-between">
-          <Link
-            href="/"
-            className="flex items-center gap-2 text-sm text-foreground/70 hover:text-foreground"
-          >
-            <PincerMark className="w-6 h-6" />
-            <span className="font-medium">Pincer</span>
-          </Link>
-          <span className="font-mono text-xs text-foreground/40 uppercase tracking-wider">
-            Setup
-          </span>
-        </div>
+      {/* Top bar — back to landing.
+          Flex row spans the full padded width (no max-w wrapper) so the
+          brand sits flush-left and the SETUP label sits flush-right against
+          the viewport edges, only inset by the header's own `px-6`. */}
+      <header className="px-6 py-5 border-b border-foreground/10 flex items-center justify-between">
+        <Link
+          href="/"
+          className="flex items-center gap-3 text-lg text-foreground/70 hover:text-foreground"
+        >
+          <PincerMark className="w-10 h-10" />
+          <span className="font-medium">Pincer</span>
+        </Link>
+        <span className="font-mono text-sm text-foreground/40 uppercase tracking-wider">
+          Setup
+        </span>
       </header>
 
-      <section className="flex-1 px-6 py-16">
+      <section className="flex-1 px-6 pt-8 pb-16">
         <div className="max-w-2xl mx-auto">
           {/* Heading */}
           <div className="text-center mb-12">
