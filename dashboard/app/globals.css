@@ -1,0 +1,212 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ---------------------------------------------------------------------------
+ * Theme tokens
+ *
+ * Palette borrowed from the career-gap project so Pincer keeps the same
+ * editorial feel: warm cream background, near-black foreground, HN-orange
+ * brand accent. Fonts mirror career-gap too — Inter for body, Fraunces for
+ * display headlines, Geist Mono for numeric/metadata bits.
+ *
+ * We map career-gap's colors onto shadcn's variable names so all generated
+ * shadcn components (Button, Card, Input, etc.) pick up the theme without
+ * any per-component overrides.
+ * ------------------------------------------------------------------------ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  /* Font stacks. The variables are injected on <html> by next/font in layout.tsx. */
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-geist-mono);
+  --font-serif: var(--font-fraunces);
+  --font-heading: var(--font-fraunces);
+
+  /* Brand accent — exposed as a Tailwind color via `bg-brand`, `text-brand`. */
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+
+  /* The rest of these are shadcn's standard surface/state tokens. */
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/* Light mode — career-gap's home palette. */
+:root {
+  --background: #f6f6ef;        /* warm HN-ish cream */
+  --foreground: #171717;        /* near-black text */
+
+  --brand: #ff6600;             /* HN orange — used for the Pincer claw mark and tags */
+  --brand-foreground: #ffffff;
+
+  /* Primary == foreground so default shadcn Buttons render as the dark
+   * pill-style CTAs career-gap uses. The orange brand is reserved for the
+   * logo + tag chips; CTAs stay near-black on cream. */
+  --primary: #171717;
+  --primary-foreground: #f6f6ef;
+
+  --card: #ffffff;
+  --card-foreground: #171717;
+  --popover: #ffffff;
+  --popover-foreground: #171717;
+
+  --secondary: #efefe8;          /* a hair darker than background, for muted blocks */
+  --secondary-foreground: #171717;
+  --muted: #efefe8;
+  --muted-foreground: #6b6b66;   /* foreground at ~65% — matches career-gap's `text-foreground/65` */
+  --accent: #efefe8;
+  --accent-foreground: #171717;
+
+  --destructive: oklch(0.577 0.245 27.325);
+
+  --border: rgba(23, 23, 23, 0.10);   /* foreground @ 10% — matches career-gap dividers */
+  --input: rgba(23, 23, 23, 0.15);
+  --ring: rgba(255, 102, 0, 0.50);    /* focus ring picks up the brand color */
+
+  --chart-1: #ff6600;
+  --chart-2: #171717;
+  --chart-3: #9a9a92;
+  --chart-4: #c4c4bb;
+  --chart-5: #efefe8;
+
+  --radius: 0.625rem;
+
+  --sidebar: #f6f6ef;
+  --sidebar-foreground: #171717;
+  --sidebar-primary: #171717;
+  --sidebar-primary-foreground: #f6f6ef;
+  --sidebar-accent: #efefe8;
+  --sidebar-accent-foreground: #171717;
+  --sidebar-border: rgba(23, 23, 23, 0.10);
+  --sidebar-ring: rgba(255, 102, 0, 0.50);
+}
+
+/* Dark mode — career-gap's warm dark brown. */
+.dark {
+  --background: #211d15;
+  --foreground: #ededed;
+
+  --brand: #ff6600;
+  --brand-foreground: #ffffff;
+
+  /* Invert: primary becomes the light foreground so CTA pills stay readable. */
+  --primary: #ededed;
+  --primary-foreground: #211d15;
+
+  --card: #2a2620;
+  --card-foreground: #ededed;
+  --popover: #2a2620;
+  --popover-foreground: #ededed;
+
+  --secondary: #2a2620;
+  --secondary-foreground: #ededed;
+  --muted: #2a2620;
+  --muted-foreground: rgba(237, 237, 237, 0.65);
+  --accent: #2a2620;
+  --accent-foreground: #ededed;
+
+  --destructive: oklch(0.704 0.191 22.216);
+
+  --border: rgba(237, 237, 237, 0.10);
+  --input: rgba(237, 237, 237, 0.15);
+  --ring: rgba(255, 102, 0, 0.50);
+
+  --chart-1: #ff6600;
+  --chart-2: #ededed;
+  --chart-3: #a89e8d;
+  --chart-4: #5c5448;
+  --chart-5: #2a2620;
+
+  --sidebar: #211d15;
+  --sidebar-foreground: #ededed;
+  --sidebar-primary: #ededed;
+  --sidebar-primary-foreground: #211d15;
+  --sidebar-accent: #2a2620;
+  --sidebar-accent-foreground: #ededed;
+  --sidebar-border: rgba(237, 237, 237, 0.10);
+  --sidebar-ring: rgba(255, 102, 0, 0.50);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+  /* Selection highlight inverts foreground/background — same as career-gap. */
+  ::selection {
+    background: var(--foreground);
+    color: var(--background);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Utility: shine sweep on hover for primary CTAs.
+ * Copied from career-gap so the "Get started →" buttons feel identical.
+ * Apply with `className="shine ..."` on any element.
+ * ------------------------------------------------------------------------ */
+.shine {
+  position: relative;
+  overflow: hidden;
+}
+
+.shine::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    rgba(255, 255, 255, 0.28) 50%,
+    transparent 70%
+  );
+  transform: translateX(-110%);
+  transition: transform 1.4s cubic-bezier(0.2, 0.8, 0.2, 1);
+  pointer-events: none;
+}
+
+.shine:hover::after {
+  transform: translateX(110%);
+}

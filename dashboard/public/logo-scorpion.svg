@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- masks open up the pincer tips with a small triangular notch -->
+  <defs>
+    <mask id="leftScorpClaw">
+      <rect width="64" height="64" fill="white"/>
+      <polygon points="11,22 3,18 12,17" fill="black"/>
+    </mask>
+    <mask id="rightScorpClaw">
+      <rect width="64" height="64" fill="white"/>
+      <polygon points="53,22 61,18 52,17" fill="black"/>
+    </mask>
+  </defs>
+
+  <!-- TAIL: arches out to the right, curls up and forward over the head -->
+  <!-- drawn first so body sits on top of the tail base -->
+  <path d="M 36 50 Q 54 50 54 32 Q 54 14 38 13"
+        stroke="#FF6600" stroke-width="5.5" fill="none" stroke-linecap="round"/>
+  <!-- subtle segment ticks on the tail to suggest articulation -->
+  <g stroke="#CC5200" stroke-width="0.8" stroke-linecap="round" fill="none">
+    <path d="M 44 50 L 44 47"/>
+    <path d="M 51 47 L 52 44"/>
+    <path d="M 54 38 L 51 38"/>
+    <path d="M 53 26 L 50 27"/>
+    <path d="M 47 17 L 45 19"/>
+  </g>
+  <!-- stinger bulb + tip pointing toward the head -->
+  <circle cx="38" cy="13" r="3" fill="#FF6600"/>
+  <path d="M 36 11 L 32 8" stroke="#CC5200" stroke-width="1.6" stroke-linecap="round"/>
+
+  <!-- legs: 3 on each side, drawn before body so they tuck under -->
+  <g stroke="#CC5200" stroke-width="1.4" stroke-linecap="round" fill="none">
+    <path d="M 25 36 L 18 33"/>
+    <path d="M 24 41 L 16 41"/>
+    <path d="M 25 46 L 18 49"/>
+    <path d="M 39 36 L 46 33"/>
+    <path d="M 40 41 L 48 41"/>
+    <path d="M 39 46 L 46 49"/>
+  </g>
+
+  <!-- pincer arms reaching forward + claws -->
+  <path d="M 26 33 Q 20 28 14 24" stroke="#FF6600" stroke-width="3.2" stroke-linecap="round" fill="none"/>
+  <ellipse cx="11" cy="21" rx="5" ry="5.5" fill="#FF6600" mask="url(#leftScorpClaw)"/>
+
+  <path d="M 38 33 Q 44 28 50 24" stroke="#FF6600" stroke-width="3.2" stroke-linecap="round" fill="none"/>
+  <ellipse cx="53" cy="21" rx="5" ry="5.5" fill="#FF6600" mask="url(#rightScorpClaw)"/>
+
+  <!-- main body: vertical oval -->
+  <ellipse cx="32" cy="42" rx="9" ry="12" fill="#FF6600"/>
+  <!-- body highlight -->
+  <ellipse cx="29" cy="38" rx="3" ry="4.5" fill="#FF8533" opacity="0.7"/>
+  <!-- body segment lines -->
+  <path d="M 24 42 Q 32 45 40 42" stroke="#E55B00" stroke-width="0.8" fill="none"/>
+  <path d="M 25 48 Q 32 51 39 48" stroke="#E55B00" stroke-width="0.8" fill="none"/>
+
+  <!-- head sits on top of the body -->
+  <circle cx="32" cy="32" r="6" fill="#FF6600"/>
+
+  <!-- face -->
+  <circle cx="29" cy="31" r="1.9" fill="white"/>
+  <circle cx="35" cy="31" r="1.9" fill="white"/>
+  <circle cx="29.5" cy="31.5" r="1.1" fill="#1a1a1a"/>
+  <circle cx="35.5" cy="31.5" r="1.1" fill="#1a1a1a"/>
+  <circle cx="30" cy="31" r="0.45" fill="white"/>
+  <circle cx="36" cy="31" r="0.45" fill="white"/>
+  <path d="M 30 35 Q 32 36.5 34 35" stroke="#1a1a1a" stroke-width="0.7" stroke-linecap="round" fill="none"/>
+</svg>
