@@ -158,17 +158,14 @@ no emojis, never invent facts).
 ### Onboarding (repo analysis)
 
 `POST /onboarding/analyze` — body `{ repo_url, token? }`.
-- Shallow-clones the repo (HTTPS, depth 1) into a temp dir. Optional
-  PAT is embedded into the URL once for private repos, never stored.
-- Reads README + samples source files recursively (depth ≤ 3, skips
-  `node_modules`/`.git`/`dist`/`build`/dotfiles), capped at 60KB / 12
-  files total.
-- Sends the content to Nemotron with instructions to return JSON
-  `{ summary, questions }` (4-6 clarifying questions).
-- Persists the summary on `project_context` (singleton row id=1).
-- Response: `{ summary, questions }`.
-- 400 on clone failure; **the response must not echo the PAT** — scrub
-  any token from git's stderr before returning.
+- Parses a GitHub HTTPS repo URL and fetches its README through the GitHub
+  REST API. Optional PAT is sent as a bearer token for private repos.
+- Sends the README to Nemotron with instructions to return structured
+  project documentation plus clarifying questions.
+- Persists the result on `project_context` (singleton row id=1).
+- Response: `{ documentation, questions }`.
+- GitHub fetch failures return `github_fetch_failed`; responses must not echo
+  the PAT.
 
 `POST /onboarding/answers` — body `{ answers: [{ question, answer }] }`.
 Persists onto `project_context.qa_json`. Returns the updated context.

@@ -44,6 +44,22 @@ Brev's UI gives you an SSH command. Once connected:
 curl -fsSL https://raw.githubusercontent.com/mannmalviya/pincer/main/agent/brev/setup.sh | bash
 ```
 
+If the repo is private, create a GitHub fine-grained personal access token
+with **Contents: Read** permission for this repo, then pass it as an
+environment variable:
+
+```bash
+export PINCER_GITHUB_TOKEN='github_pat_...'
+curl -fsSL \
+  -H "Authorization: Bearer ${PINCER_GITHUB_TOKEN}" \
+  https://raw.githubusercontent.com/mannmalviya/pincer/main/agent/brev/setup.sh \
+  | PINCER_GITHUB_TOKEN="${PINCER_GITHUB_TOKEN}" bash
+```
+
+The token is used only as an HTTP auth header for `git clone` / `git fetch`;
+it is not written into the repo's `origin` URL. If your repo lives under an
+organization with SSO, authorize the token for that organization in GitHub.
+
 The script:
 
 1. Installs Node 22 (NodeSource) and build tools (better-sqlite3 needs them).

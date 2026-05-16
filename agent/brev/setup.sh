@@ -21,6 +21,7 @@ REPO_URL="${PINCER_REPO_URL:-https://github.com/mannmalviya/pincer.git}"
 REPO_DIR="${PINCER_REPO_DIR:-$HOME/pincer}"
 BRANCH="${PINCER_BRANCH:-main}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
+GITHUB_TOKEN="${PINCER_GITHUB_TOKEN:-}"
 
 # DB dir, needed unconditionally for the `mkdir -p` below. Real DB_PATH
 # is read at runtime by the agent from .env (or process.env if not set).
@@ -28,6 +29,18 @@ DB_PATH_DEFAULT="$HOME/.pincer/agent.sqlite"
 
 # --- helpers -----------------------------------------------------------------
 log() { printf "\n\033[1;36m[setup]\033[0m %s\n" "$*"; }
+
+git_auth_args=()
+if [[ -n "$GITHUB_TOKEN" ]]; then
+  if [[ "$REPO_URL" != https://github.com/* ]]; then
+    log "PINCER_GITHUB_TOKEN is set, but PINCER_REPO_URL is not a GitHub HTTPS URL; token auth will be skipped"
+  else
+    git_auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w 0)"
+    git_auth_args=(
+      -c "http.https://github.com/.extraheader=Authorization: Basic ${git_auth_header}"
+    )
+  fi
+fi
 
 # --- 1. Node 22 via NodeSource ----------------------------------------------
 if ! command -v node >/dev/null 2>&1 || [[ "$(node -v)" != v${NODE_MAJOR}.* ]]; then
@@ -41,12 +54,12 @@ fi
 # --- 2. Repo (clone or pull) -------------------------------------------------
 if [[ -d "$REPO_DIR/.git" ]]; then
   log "updating existing repo at $REPO_DIR"
-  git -C "$REPO_DIR" fetch origin "$BRANCH"
+  git "${git_auth_args[@]}" -C "$REPO_DIR" fetch origin "$BRANCH"
   git -C "$REPO_DIR" checkout "$BRANCH"
   git -C "$REPO_DIR" reset --hard "origin/$BRANCH"
 else
   log "cloning $REPO_URL to $REPO_DIR"
-  git clone --branch "$BRANCH" "$REPO_URL" "$REPO_DIR"
+  git "${git_auth_args[@]}" clone --branch "$BRANCH" "$REPO_URL" "$REPO_DIR"
 fi
 
 # --- 3. npm install (forces native rebuild for the active Node version) -----
