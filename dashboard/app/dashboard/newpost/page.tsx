@@ -58,16 +58,21 @@ export default function NewPostPage() {
   // "post everywhere I set up" is the common case.
   const [targets, setTargets] = useState<Set<Platform>>(new Set());
 
-  // Draft fields. Title is required for both Reddit and HN. Subreddit is
-  // required only when reddit is a target.
+  // Draft fields. Title is required for both Reddit and HN. Subreddits
+  // (plural) is required only when Reddit is a target — the user can
+  // pick multiple subs to cross-post the same draft to, which we fan
+  // out into one /post call per sub at publish time.
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
-  const [subreddit, setSubreddit] = useState("");
+  const [subreddits, setSubreddits] = useState<string[]>([]);
 
-  // Publish-run state. `results` is keyed by platform so we can show a
-  // per-platform success/failure pill after the run finishes.
+  // Publish-run state. Results are keyed by a per-target string:
+  //   - "hn" for Hacker News
+  //   - "reddit:<sub>" for each Reddit subreddit cross-post
+  // The string-key flattens the platform x subreddit cartesian into a
+  // single map that the results card can render row-by-row.
   const [publishing, setPublishing] = useState(false);
-  const [results, setResults] = useState<Partial<Record<Platform, PublishResult>>>({});
+  const [results, setResults] = useState<Record<string, PublishResult>>({});
 
   // Two-phase Publish: phase 1 makes sure the Python sidecar is up
   // (auto-spawn if needed, same route the onboarding wizard uses);
@@ -139,7 +144,26 @@ export default function NewPostPage() {
     publishableTargets.length > 0 &&
     title.trim().length > 0 &&
     body.trim().length > 0 &&
-    (!needsSubreddit || subreddit.trim().length > 0);
+    (!needsSubreddit || subreddits.length > 0);
+
+  // Flat list of every concrete "thing to post". One entry per HN
+  // target, N entries per Reddit target (one per selected subreddit).
+  // Used both for the seeded results map and the fan-out loop below.
+  const publishJobs = useMemo<
+    Array<{ key: string; platform: Platform; subreddit?: string }>
+  >(() => {
+    const jobs: Array<{ key: string; platform: Platform; subreddit?: string }> = [];
+    for (const platform of publishableTargets) {
+      if (platform === "reddit") {
+        for (const sub of subreddits) {
+          jobs.push({ key: `reddit:${sub}`, platform: "reddit", subreddit: sub });
+        }
+      } else {
+        jobs.push({ key: platform, platform });
+      }
+    }
+    return jobs;
+  }, [publishableTargets, subreddits]);
 
   async function handlePublish() {
     setBootError(null);
@@ -177,31 +201,29 @@ export default function NewPostPage() {
 
     // Phase 2: the actual publish run.
     setPublishing(true);
-    // Seed every target as pending so the user sees rows light up
+    // Seed every job as pending so the user sees rows light up
     // immediately, then mutate each one as its request resolves.
-    const seeded: Partial<Record<Platform, PublishResult>> = {};
-    for (const p of publishableTargets) seeded[p] = { state: "pending" };
+    const seeded: Record<string, PublishResult> = {};
+    for (const job of publishJobs) seeded[job.key] = { state: "pending" };
     setResults(seeded);
 
-    // Fire requests in parallel. The sidecar serializes them anyway
-    // (single Chromium profile), but starting them concurrently lets the
-    // sidecar pick its own order and keeps the client code simple.
+    // Fire requests in parallel. The sidecar's _post_lock serializes
+    // them anyway (single Chromium profile), but starting them
+    // concurrently lets the sidecar pick its own order and keeps the
+    // client code simple. Multiple Reddit posts to different subs
+    // queue up cleanly behind the lock.
     await Promise.all(
-      publishableTargets.map(async (platform) => {
+      publishJobs.map(async (job) => {
         try {
           const res = await fetch(`${SIDECAR_BASE}/post`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              platform,
+              platform: job.platform,
               title: title.trim(),
               body: body.trim(),
-              // Subreddit only matters for Reddit; sidecar ignores it
-              // for HN. Trim + drop a leading r/ if the user typed it.
-              subreddit:
-                platform === "reddit"
-                  ? subreddit.trim().replace(/^r\//i, "")
-                  : undefined,
+              // Subreddit only matters for Reddit; sidecar ignores it for HN.
+              subreddit: job.subreddit,
             }),
           });
           const data = (await res.json()) as {
@@ -211,20 +233,18 @@ export default function NewPostPage() {
           };
           setResults((cur) => ({
             ...cur,
-            [platform]: data.ok
+            [job.key]: data.ok
               ? { state: "ok", url: data.url ?? null }
               : { state: "error", message: data.error ?? "Unknown error" },
           }));
-          // Per-platform success toast at the top of the screen. Errors
-          // already show inline in the results card, so we only celebrate
-          // the wins here.
           if (data.ok) {
-            pushToast(`Posted successfully on ${PLATFORM_META[platform].label}`);
+            const label = job.subreddit
+              ? `r/${job.subreddit}`
+              : PLATFORM_META[job.platform].label;
+            pushToast(`Posted successfully on ${label}`);
             // Fire-and-forget: tell the Brev agent to start watching this
             // post (records snapshots, fetches comments every 60s). Failures
             // get logged in the browser console but never block the UI.
-            // If NEXT_PUBLIC_AGENT_URL isn't set, this hits localhost:8000
-            // which silently no-ops when no local agent is running.
             if (data.url) {
               void registerPost({
                 url: data.url,
@@ -239,7 +259,7 @@ export default function NewPostPage() {
           // actionable to copy into the sidecar terminal.
           setResults((cur) => ({
             ...cur,
-            [platform]: {
+            [job.key]: {
               state: "error",
               message:
                 err instanceof Error
@@ -352,17 +372,31 @@ export default function NewPostPage() {
       <section className="flex flex-col gap-4">
         {needsSubreddit && (
           <div className="flex flex-col gap-2">
-            <Label htmlFor="post-subreddit">Subreddit</Label>
+            <Label htmlFor="post-subreddit">
+              {subreddits.length > 1 ? "Subreddits" : "Subreddit"}
+            </Label>
             <SubredditCombobox
               id="post-subreddit"
-              value={subreddit}
-              onChange={setSubreddit}
+              value={subreddits}
+              onChange={setSubreddits}
               placeholder="SideProject"
             />
             <p className="text-xs text-foreground/50">
               Posting to a sub you don&apos;t have karma in is the most
-              common reason a Reddit post fails.
+              common reason a Reddit post fails. Type a sub name and press
+              Enter to add it — repeat for as many as you want.
             </p>
+            {subreddits.length > 1 && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200 px-3 py-2 leading-relaxed">
+                <strong className="font-semibold">Cross-posting warning:</strong>{" "}
+                Reddit&apos;s anti-spam heuristics flag identical content
+                posted to multiple subreddits in quick succession. Expect
+                the second-and-later posts to land in modqueue, get
+                shadow-removed, or trigger a rate-limit on your account.
+                For real launches, space cross-posts out by an hour or
+                more, or tailor the body per subreddit.
+              </div>
+            )}
           </div>
         )}
 
@@ -427,14 +461,17 @@ export default function NewPostPage() {
         {Object.keys(results).length > 0 && (
           <Card>
             <CardContent className="py-4 flex flex-col gap-2">
-              {publishableTargets.map((p) => {
-                const r = results[p];
+              {/* One result row per concrete publish job. For Reddit
+                  with multiple subs, each sub gets its own row so the
+                  user can see which cross-post succeeded vs failed. */}
+              {publishJobs.map((job) => {
+                const r = results[job.key];
                 if (!r) return null;
-                const meta = PLATFORM_META[p];
+                const meta = PLATFORM_META[job.platform];
                 const Icon = meta.icon;
                 return (
                   <div
-                    key={p}
+                    key={job.key}
                     className="flex items-center justify-between gap-3 text-sm"
                   >
                     <span className="flex items-center gap-2">
@@ -443,7 +480,14 @@ export default function NewPostPage() {
                         style={{ color: meta.color }}
                         aria-hidden
                       />
-                      <span className="font-medium">{meta.label}</span>
+                      <span className="font-medium">
+                        {meta.label}
+                        {job.subreddit && (
+                          <span className="ml-1.5 text-foreground/60 font-mono text-xs">
+                            r/{job.subreddit}
+                          </span>
+                        )}
+                      </span>
                     </span>
                     <ResultPill result={r} />
                   </div>

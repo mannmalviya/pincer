@@ -63,3 +63,16 @@ CREATE TABLE IF NOT EXISTS comments (
   UNIQUE (post_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_comments_post_posted ON comments(post_id, posted_at DESC);
+
+-- Single-table key/value store for agent-wide knobs the user can tweak
+-- from the dashboard's Settings page. Values are stored as TEXT and
+-- parsed at read time (settings.ts handles the casts). Two settings exist
+-- today:
+--   base_poll_interval_seconds  — scheduler period. Posts under 1h old
+--                                 are polled every Nth tick (multiplier 1).
+--   adaptive_polling_enabled    — '1' or '0'. When 0, every post polls at
+--                                 the base interval regardless of age.
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);

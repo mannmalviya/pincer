@@ -1,4 +1,5 @@
 import { BackfillCard } from "../_components/backfill-card";
+import { PollSettingsCard } from "../_components/poll-settings-card";
 
 // /dashboard/settings — single page for everything that's not part of the
 // main daily loop. Right now that's just the backfill form; future tenants
@@ -17,6 +18,10 @@ export default function SettingsPage() {
         <p className="text-foreground/70 mt-3 max-w-xl leading-relaxed">
           Add old posts to the watch list or wire up new platforms.
         </p>
+      </section>
+
+      <section>
+        <PollSettingsCard />
       </section>
 
       <section>

@@ -102,6 +102,40 @@ export async function fetchComments(
   }
 }
 
+// Agent-wide user-tweakable knobs, surfaced on /dashboard/settings.
+// base_poll_interval_seconds is the scheduler period for the watch loop;
+// adaptive_polling_enabled stretches that interval for older posts.
+export type AgentSettings = {
+  base_poll_interval_seconds: number;
+  adaptive_polling_enabled: boolean;
+};
+
+export async function fetchSettings(): Promise<AgentSettings | null> {
+  try {
+    const res = await fetch(`${AGENT_BASE}/settings`, { cache: "no-store" });
+    if (!res.ok) return null;
+    return (await res.json()) as AgentSettings;
+  } catch {
+    return null;
+  }
+}
+
+export async function patchSettings(
+  patch: Partial<AgentSettings>,
+): Promise<AgentSettings | null> {
+  try {
+    const res = await fetch(`${AGENT_BASE}/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as AgentSettings;
+  } catch {
+    return null;
+  }
+}
+
 // Fetch the live counts. Returns null on failure so callers can render a
 // graceful "agent offline" placeholder rather than crashing the page.
 export async function fetchStats(): Promise<AgentStats | null> {

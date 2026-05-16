@@ -82,6 +82,12 @@ function buildSystemPrompt(req: ChatRequest): string {
     "When proposing an edit, return the complete new title/body, NOT a diff or fragment. The dashboard computes the diff itself.",
     "Do not wrap the JSON in markdown code fences.",
     "",
+    // Title is plain text on every platform we publish to (Reddit's
+    // title field is a <textarea name='title'>, HN's is a plain input;
+    // neither parses any markdown). If we let the model emit **bold**
+    // or # heading syntax in new_title the chars publish literally.
+    'TITLE RULE: "new_title" must be plain text — no markdown syntax. No **bold**, no *italics*, no leading # for heading, no [brackets](links). Use natural punctuation only. The body-formatting rules below apply ONLY to "new_body".',
+    "",
     platformLine,
     "",
     req.title ? `Current post title: ${req.title.slice(0, MAX_TITLE_CHARS)}` : "",

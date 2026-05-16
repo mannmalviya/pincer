@@ -12,6 +12,7 @@ import { registerBackfillUserRoute } from "./routes/backfill-user.js";
 import { registerCommentsRoute } from "./routes/comments.js";
 import { registerHealthRoute } from "./routes/health.js";
 import { registerPostsRoutes } from "./routes/posts.js";
+import { registerSettingsRoute } from "./routes/settings.js";
 import { registerStatsRoute } from "./routes/stats.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -57,6 +58,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   registerStatsRoute(app);
   registerBackfillUserRoute(app);
   registerCommentsRoute(app);
+  registerSettingsRoute(app);
 
   return app;
 }

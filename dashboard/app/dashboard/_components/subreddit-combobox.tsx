@@ -1,35 +1,36 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-
-import { Input } from "@/components/ui/input";
+import { FaXmark } from "react-icons/fa6";
 
 // ---------------------------------------------------------------------------
-// SubredditCombobox — typeahead-style input for picking a subreddit.
+// SubredditCombobox — multi-select typeahead for picking one or more
+// subreddits to publish to.
 //
-// Drops into the New Post page in place of a plain <Input>. As the user
-// types, it hits /api/reddit/subreddits (Next.js route handler that
-// proxies Reddit's autocomplete endpoint, since Reddit doesn't allow
-// CORS) and renders a dropdown of matches. Click or arrow+enter to
-// commit a suggestion.
+// Layout: selected subreddits render inline as removable chips, followed
+// by a typing input that autocompletes against /api/reddit/subreddits
+// (which proxies Reddit's autocomplete endpoint server-side because
+// reddit.com doesn't return CORS headers).
 //
 // Keyboard:
-//   - Arrow down / up : move highlight
-//   - Enter           : pick the highlighted item (if any)
+//   - Arrow down / up : move highlight in the dropdown
+//   - Enter           : commit highlighted suggestion (or current typed
+//                       text if no suggestion is highlighted) as a chip
 //   - Escape          : close the dropdown
-//   - Tab             : commit highlight + close, native focus moves on
+//   - Backspace on empty input : remove the last chip (standard
+//                                multi-select convention)
 //
-// The component is stateless about errors: empty results from the API
-// just show "no suggestions" and a transient fetch error shows nothing,
-// because the user can always type the name in by hand.
+// Duplicates are silently ignored — adding the same sub twice does
+// nothing rather than producing two chips. The order of chips reflects
+// insertion order, which is also the order the parent uses when
+// fanning out Publish calls.
 // ---------------------------------------------------------------------------
 
 type Suggestion = { name: string; subscribers: number };
 
 // Debounce delay between the last keystroke and firing the API call.
-// 200ms keeps the dropdown feeling responsive while collapsing rapid
-// typing into a single request. Smaller numbers (<=120ms) start hitting
-// Reddit's rate limiter on quick typists.
+// 200ms keeps the dropdown responsive without hammering Reddit's
+// autocomplete on every keystroke from fast typists.
 const DEBOUNCE_MS = 200;
 
 export function SubredditCombobox({
@@ -38,34 +39,36 @@ export function SubredditCombobox({
   placeholder,
   id,
 }: {
-  value: string;
-  onChange: (next: string) => void;
+  value: string[];
+  onChange: (next: string[]) => void;
   placeholder?: string;
   id?: string;
 }) {
   // Generated id so the dropdown's aria-controls / aria-activedescendant
-  // wiring is stable even when multiple comboboxes mount on the same page.
+  // wiring is stable across multiple comboboxes on the same page.
   const reactId = useId();
   const inputId = id ?? `subreddit-${reactId}`;
   const listboxId = `${inputId}-listbox`;
 
+  // The text the user is currently typing (NOT yet committed as a chip).
+  const [draft, setDraft] = useState("");
   const [items, setItems] = useState<Suggestion[]>([]);
   const [open, setOpen] = useState(false);
-  // -1 = no row highlighted. Lets Enter fall through as form submit when
-  // no suggestion is selected, instead of grabbing an arbitrary one.
+  // -1 = no row highlighted. Lets Enter fall through to commit the raw
+  // draft text rather than always grabbing the first suggestion.
   const [highlight, setHighlight] = useState(-1);
   const [loading, setLoading] = useState(false);
 
   // Wrapper ref drives the "click outside to dismiss" detector.
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  // Debounced fetch. Each keystroke schedules a fetch DEBOUNCE_MS in the
-  // future; if another keystroke arrives first, the older timer is
-  // cancelled. AbortController makes sure an out-of-order response from
-  // a stale fetch can't overwrite a newer one's results.
+  // Debounced fetch. AbortController + clearTimeout on each new keystroke
+  // ensure an out-of-order response from a stale request can't overwrite
+  // a newer one's results.
   useEffect(() => {
     if (!open) return;
-    const trimmed = value.trim().replace(/^r\//i, "");
+    const trimmed = draft.trim().replace(/^r\//i, "");
     if (trimmed.length < 2) {
       setItems([]);
       setLoading(false);
@@ -83,7 +86,7 @@ export function SubredditCombobox({
         setItems(data.items ?? []);
         setHighlight(-1);
       } catch {
-        // Aborted or network blip. Leave items as-is so a flicker of
+        // Aborted or network blip; leave items alone so a flicker of
         // the previous dropdown stays on screen until the next tick.
       } finally {
         if (!controller.signal.aborted) setLoading(false);
@@ -93,11 +96,11 @@ export function SubredditCombobox({
       controller.abort();
       window.clearTimeout(handle);
     };
-  }, [value, open]);
+  }, [draft, open]);
 
-  // Dismiss on click anywhere outside the wrapper. Listening on mousedown
-  // (not click) catches the down-stroke, so the dropdown collapses before
-  // the focus moves and you don't see a flash of "still open".
+  // Dismiss the dropdown when the user clicks anywhere outside the
+  // wrapper. Listening on mousedown (not click) catches the down-stroke
+  // so the dropdown collapses before focus moves — no flash of stale UI.
   useEffect(() => {
     if (!open) return;
     function onDown(e: MouseEvent) {
@@ -110,10 +113,27 @@ export function SubredditCombobox({
     return () => window.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  function commit(suggestion: Suggestion) {
-    onChange(suggestion.name);
-    setOpen(false);
+  // Add a subreddit to the chip list. Dedupe is case-insensitive so
+  // "Test" and "test" don't both end up as chips for r/test.
+  function add(name: string) {
+    const cleaned = name.trim().replace(/^r\//i, "");
+    if (!cleaned) return;
+    const lower = cleaned.toLowerCase();
+    if (value.some((v) => v.toLowerCase() === lower)) {
+      // Already chipped — just clear the draft and re-focus.
+      setDraft("");
+      setHighlight(-1);
+      inputRef.current?.focus();
+      return;
+    }
+    onChange([...value, cleaned]);
+    setDraft("");
     setHighlight(-1);
+    inputRef.current?.focus();
+  }
+
+  function remove(name: string) {
+    onChange(value.filter((v) => v !== name));
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
@@ -127,11 +147,14 @@ export function SubredditCombobox({
         items.length === 0 ? -1 : (h - 1 + items.length) % items.length,
       );
     } else if (e.key === "Enter") {
-      // Only intercept Enter when a suggestion is highlighted, otherwise
-      // let the keystroke pass through (form submit, default behavior).
+      e.preventDefault();
+      // Prefer the highlighted suggestion; if none, commit the raw
+      // typed draft so the user can add arbitrary sub names without
+      // waiting for autocomplete.
       if (open && highlight >= 0 && items[highlight]) {
-        e.preventDefault();
-        commit(items[highlight]);
+        add(items[highlight].name);
+      } else if (draft.trim()) {
+        add(draft);
       }
     } else if (e.key === "Escape") {
       if (open) {
@@ -140,50 +163,83 @@ export function SubredditCombobox({
         setHighlight(-1);
       }
     } else if (e.key === "Tab") {
-      // Tab commits the highlighted item (if any) and keeps default focus
-      // movement, so the user can typeahead-then-tab without thinking.
       if (open && highlight >= 0 && items[highlight]) {
-        commit(items[highlight]);
+        add(items[highlight].name);
       }
+    } else if (e.key === "Backspace" && draft === "" && value.length > 0) {
+      // Standard multi-select gesture: backspace on an empty input
+      // pops the most recently added chip.
+      e.preventDefault();
+      onChange(value.slice(0, -1));
     }
   }
 
   return (
     <div ref={wrapperRef} className="relative">
-      {/* Hardcoded r/ prefix so the user doesn't try to type it themselves
-          (which would produce "r/r/SideProject" in the request). The span
-          is pointer-events-none so clicking on it still focuses the
-          underlying input; the input's pl-8 leaves room for the glyph. */}
-      <span
-        aria-hidden
-        className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-foreground/60 select-none"
-      >
-        r/
-      </span>
-      <Input
-        id={inputId}
-        value={value}
-        onChange={(e) => {
-          // Defensive strip in case the user pastes "r/foo" — without
-          // this the rendered field would read "r/r/foo" thanks to the
-          // hardcoded prefix above.
-          const next = e.target.value.replace(/^r\//i, "");
-          onChange(next);
-          if (!open) setOpen(true);
-        }}
-        onFocus={() => setOpen(true)}
-        onKeyDown={onKeyDown}
-        placeholder={placeholder}
-        autoComplete="off"
-        role="combobox"
-        aria-expanded={open}
-        aria-controls={listboxId}
-        aria-autocomplete="list"
-        aria-activedescendant={
-          highlight >= 0 ? `${listboxId}-opt-${highlight}` : undefined
+      {/* Outer wrapper styled like an input so chips + draft input
+          look like one cohesive control. focus-within lights up the
+          ring when the inner input is focused. */}
+      <div
+        className={
+          "flex flex-wrap items-center gap-1.5 min-h-9 w-full rounded-lg " +
+          "border border-input bg-transparent px-2 py-1 " +
+          "focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 " +
+          "transition-colors cursor-text"
         }
-        className="pl-8"
-      />
+        onClick={() => inputRef.current?.focus()}
+      >
+        {value.map((sub) => (
+          <span
+            key={sub}
+            className="inline-flex items-center gap-1 rounded-full bg-[color:var(--brand)]/10 text-[color:var(--brand)] text-xs font-medium px-2 py-0.5"
+          >
+            <span className="font-mono">r/{sub}</span>
+            <button
+              type="button"
+              onClick={(e) => {
+                // Stop the wrapper's onClick from focusing the input
+                // back; the user likely just wanted to delete the chip.
+                e.stopPropagation();
+                remove(sub);
+              }}
+              aria-label={`Remove r/${sub}`}
+              className="inline-flex items-center justify-center h-4 w-4 rounded-full hover:bg-[color:var(--brand)]/20"
+            >
+              <FaXmark className="text-[10px]" />
+            </button>
+          </span>
+        ))}
+        {/* The typing input. flex-1 lets it grow to fill remaining
+            space on the row; min-w-[6rem] keeps it usable even when
+            many chips are wrapping. */}
+        <input
+          ref={inputRef}
+          id={inputId}
+          value={draft}
+          onChange={(e) => {
+            // Defensive strip of pasted "r/" prefix so a paste of
+            // "r/SideProject" doesn't end up as "r/r/SideProject" when
+            // committed.
+            setDraft(e.target.value.replace(/^r\//i, ""));
+            if (!open) setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={onKeyDown}
+          placeholder={value.length === 0 ? placeholder : ""}
+          autoComplete="off"
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={listboxId}
+          aria-autocomplete="list"
+          aria-activedescendant={
+            highlight >= 0 ? `${listboxId}-opt-${highlight}` : undefined
+          }
+          className={
+            "flex-1 min-w-[6rem] bg-transparent outline-none text-sm " +
+            "placeholder:text-muted-foreground py-0.5"
+          }
+        />
+      </div>
 
       {open && (items.length > 0 || loading) && (
         <ul
@@ -200,30 +256,36 @@ export function SubredditCombobox({
           )}
           {items.map((item, i) => {
             const active = i === highlight;
+            const already = value.some(
+              (v) => v.toLowerCase() === item.name.toLowerCase(),
+            );
             return (
               <li
                 key={item.name}
                 id={`${listboxId}-opt-${i}`}
                 role="option"
                 aria-selected={active}
-                // mousedown rather than click — click fires after the
-                // input's blur, which would close the dropdown via the
-                // outside-click handler before the selection lands.
                 onMouseDown={(e) => {
+                  // mousedown rather than click — click fires after the
+                  // input's blur, which would close the dropdown via the
+                  // outside-click handler before the selection lands.
                   e.preventDefault();
-                  commit(item);
+                  if (!already) add(item.name);
                 }}
                 onMouseEnter={() => setHighlight(i)}
                 className={
-                  "px-3 py-2 cursor-pointer flex items-center justify-between gap-3 " +
-                  (active ? "bg-foreground/5" : "")
+                  "px-3 py-2 flex items-center justify-between gap-3 " +
+                  (already
+                    ? "text-foreground/30 cursor-default"
+                    : "cursor-pointer ") +
+                  (active && !already ? "bg-foreground/5" : "")
                 }
               >
                 <span className="font-medium tracking-tight">
                   r/{item.name}
                 </span>
                 <span className="text-xs font-mono text-foreground/50">
-                  {formatSubscribers(item.subscribers)}
+                  {already ? "added" : formatSubscribers(item.subscribers)}
                 </span>
               </li>
             );
@@ -234,9 +296,9 @@ export function SubredditCombobox({
   );
 }
 
-// Compact subscriber counts. 1234567 → "1.2M", 23000 → "23k". Keeps the
-// dropdown rows visually quiet instead of dumping seven-digit numbers
-// next to every row.
+// Compact subscriber counts. 1234567 -> "1.2M", 23000 -> "23k". Keeps
+// the dropdown rows visually quiet instead of dumping seven-digit
+// numbers next to every row.
 function formatSubscribers(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k`;

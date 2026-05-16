@@ -5,6 +5,7 @@ import { FaBinoculars } from "react-icons/fa6";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { AGENT_BASE } from "@/lib/agent";
 
 // BackfillCard, an always-available form to register existing Reddit / HN
@@ -153,46 +154,33 @@ export function BackfillCard() {
         {/* Shared watch toggle. Applies to every URL the user submits from
             this card, whether by username or by URL. Default on because
             backfilling without watching just records dead history. */}
-        <div className="flex items-center justify-between gap-3 rounded-lg border border-foreground/10 bg-foreground/[0.02] px-3 py-2">
-          <div className="flex items-center gap-2">
-            <FaBinoculars
-              className={
-                "text-base " +
-                (watchAll ? "text-[color:var(--brand)]" : "text-foreground/40")
-              }
-              aria-hidden
-            />
-            <div className="flex flex-col">
-              <span className="text-sm font-medium">
-                Watch all backfilled posts
-              </span>
-              <span className="text-xs text-foreground/55">
-                {watchAll
-                  ? "Pincer will poll each post every 60s for new comments."
-                  : "Posts are recorded but not polled. You can toggle individually later."}
-              </span>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setWatchAll((v) => !v)}
-            role="switch"
-            aria-checked={watchAll}
+        <label
+          htmlFor="backfill-watch-all"
+          className="flex items-center gap-3 rounded-lg border border-foreground/10 bg-foreground/[0.02] px-3 py-2 cursor-pointer"
+        >
+          <Checkbox
+            id="backfill-watch-all"
+            checked={watchAll}
+            onCheckedChange={(v) => setWatchAll(v === true)}
+          />
+          <FaBinoculars
             className={
-              "shrink-0 w-11 h-6 rounded-full border transition-colors relative " +
-              (watchAll
-                ? "bg-[color:var(--brand)] border-[color:var(--brand)]"
-                : "bg-foreground/10 border-foreground/15")
+              "text-base shrink-0 " +
+              (watchAll ? "text-[color:var(--brand)]" : "text-foreground/40")
             }
-          >
-            <span
-              className={
-                "absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform " +
-                (watchAll ? "translate-x-5" : "translate-x-0.5")
-              }
-            />
-          </button>
-        </div>
+            aria-hidden
+          />
+          <div className="flex flex-col min-w-0">
+            <span className="text-sm font-medium">
+              Watch all backfilled posts
+            </span>
+            <span className="text-xs text-foreground/55">
+              {watchAll
+                ? "Pincer will poll each post every 60s for new comments."
+                : "Posts are recorded but not polled. Toggle individually later."}
+            </span>
+          </div>
+        </label>
 
         {/* User mode: agent enumerates every public submission for the
             given username on each platform and registers them in bulk. */}
