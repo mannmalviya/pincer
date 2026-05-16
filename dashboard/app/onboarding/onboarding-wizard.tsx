@@ -1,20 +1,19 @@
 "use client";
 
-import { useState, type ComponentType } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  FaReddit,
-  FaHackerNews,
-  FaDiscord,
-  FaXTwitter,
-  FaInstagram,
-  FaTiktok,
-} from "react-icons/fa6";
+import { FaCheck } from "react-icons/fa6";
 
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  PLATFORM_META,
+  PLATFORM_ORDER,
+  saveSelectedPlatforms,
+  type Platform,
+} from "@/lib/platforms";
 
 // ---------------------------------------------------------------------------
 // OnboardingWizard — two-step setup flow.
@@ -34,84 +33,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 // from the browser-sidecar/ directory.
 // ---------------------------------------------------------------------------
 
-// The canonical list of platforms Pincer can target. Add a new one by
-// extending this union, the PLATFORM_META map below, AND the LOGIN_URLS map
-// in browser-sidecar/app.py.
-type Platform = "reddit" | "hn" | "discord" | "x" | "instagram" | "tiktok";
-
-const PLATFORM_ORDER: Platform[] = [
-  "reddit",
-  "hn",
-  "discord",
-  "x",
-  "instagram",
-  "tiktok",
-];
-
-// Display metadata for the selection step + login preview.
-//
-// `icon`  — react-icons component for the brand glyph.
-// `color` — official brand color, passed straight as inline `color` so the
-//           icon renders in its true hue regardless of our theme tokens.
-//           X is intentionally left as `currentColor` so it inherits the
-//           foreground (black on light, white on dark) — X has no fixed
-//           accent color.
-// `badge` — small uppercase tag for platforms that are stubs / coming soon.
-//           Currently Reddit + HN have working post implementations; the
-//           others can be selected and logged into, but posting from them
-//           is wired in a later pass.
-type PlatformMeta = {
-  label: string;
-  tagline: string;
-  badge?: string;
-  icon: ComponentType<{ className?: string; style?: React.CSSProperties }>;
-  color: string;
-};
-
-const PLATFORM_META: Record<Platform, PlatformMeta> = {
-  reddit: {
-    label: "Reddit",
-    tagline: "Submit to subreddits, monitor comments and karma over time.",
-    icon: FaReddit,
-    color: "#FF4500",
-  },
-  hn: {
-    label: "Hacker News",
-    tagline: "Show HN / Ask HN submissions, score and comment polling.",
-    icon: FaHackerNews,
-    color: "#FF6600",
-  },
-  discord: {
-    label: "Discord",
-    tagline: "Announce launches to your server.",
-    badge: "soon",
-    icon: FaDiscord,
-    color: "#5865F2",
-  },
-  x: {
-    label: "X",
-    tagline: "Threads and posts at launch.",
-    badge: "soon",
-    icon: FaXTwitter,
-    color: "currentColor",
-  },
-  instagram: {
-    label: "Instagram",
-    tagline: "Posts and Stories from a Business account.",
-    badge: "soon",
-    icon: FaInstagram,
-    color: "#E4405F",
-  },
-  tiktok: {
-    label: "TikTok",
-    tagline: "Content Posting API. Sandbox by default.",
-    badge: "soon",
-    icon: FaTiktok,
-    color: "currentColor",
-  },
-};
-
-// Base URL for the local browser-sidecar. Hardcoded for dev — when we
+// Base URL for the local browser-sidecar. Hardcoded for dev. When we
 // deploy, this becomes an env var that the laptop-side worker reads.
 const SIDECAR_BASE = "http://localhost:9000";
 
@@ -164,11 +86,14 @@ export function OnboardingWizard() {
   async function handleFinish() {
     setSubmitting(true);
     try {
-      // No backend persistence yet — the sidecar already wrote the cookie
-      // profile to disk during /login/finish, which is the only piece of
-      // state that actually matters for posting. Future work: POST the
-      // selected platforms to the Node agent so it knows which ones to
-      // include in stats and the comment-watch loop.
+      // Stash the user's selection in localStorage so the New Post page
+      // knows which platforms to offer as publish targets. Cookies for
+      // those same platforms already live in the sidecar's profile dir
+      // (saved during /login/finish), so the two pieces of state pair up:
+      // the cookies enable posting, the localStorage flag drives the UI.
+      // Future work: POST this to the Node agent too so the comment-watch
+      // loop knows which platforms to poll.
+      saveSelectedPlatforms(selected);
       router.push("/dashboard");
     } finally {
       setSubmitting(false);
@@ -378,6 +303,64 @@ function BrowserLoginStep({
   >("idle");
   const [error, setError] = useState<string | null>(null);
 
+  // Per-platform "are they signed in?" map, populated by the polling
+  // effect below. We don't pre-seed keys, so a missing entry reads as
+  // "not detected yet" — same UX as false but the distinction is useful
+  // for debugging in the network panel.
+  const [detected, setDetected] = useState<Partial<Record<Platform, boolean>>>(
+    {},
+  );
+
+  // `allDetected` gates the "I'm done logging in" button. The user
+  // explicitly asked for this: until every platform shows a tick, the
+  // button stays disabled and a hover tooltip explains why.
+  const allDetected =
+    platforms.length > 0 && platforms.every((p) => detected[p]);
+
+  // Poll the sidecar's /login/status while Chromium is open. Cookie
+  // checks are free; URL fallbacks only fire when the cookie is missing,
+  // so 2.5s is a comfortable cadence without hammering the platform APIs.
+  // The polling stops the moment we leave the "waiting" state (button
+  // click, error, finish).
+  useEffect(() => {
+    if (status !== "waiting") return;
+    let cancelled = false;
+    const controller = new AbortController();
+
+    async function tick() {
+      try {
+        const res = await fetch(`${SIDECAR_BASE}/login/status`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ platforms }),
+          signal: controller.signal,
+        });
+        const data = (await res.json()) as {
+          ok: boolean;
+          status?: Record<string, boolean>;
+        };
+        if (cancelled || !data.ok || !data.status) return;
+        // Replace, not merge: the latest tick is the truth. If a
+        // previously-detected platform flips back to false (user signed
+        // out mid-flow), we want the row to revert.
+        setDetected(data.status as Partial<Record<Platform, boolean>>);
+      } catch {
+        // Network errors are expected during the startup race window
+        // and during finish. Swallow them — next tick will retry.
+      }
+    }
+
+    // Fire one immediately so the user doesn't sit through a 2.5s wait
+    // for the first reading, then poll on the interval.
+    tick();
+    const handle = window.setInterval(tick, 2500);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearInterval(handle);
+    };
+  }, [status, platforms]);
+
   async function openLogin() {
     setError(null);
 
@@ -475,30 +458,51 @@ function BrowserLoginStep({
           one Pincer will post from.
         </div>
 
-        {/* The set of platforms whose login tabs will be opened. Shows the
-            user exactly what they're about to see in the Chromium window. */}
+        {/* The set of platforms whose login tabs will be opened. While
+            Chromium is open we poll /login/status and flip each row to a
+            "signed in" state the moment its auth cookie shows up. Rows
+            never down-grade once green to avoid flicker if a poll briefly
+            misses (e.g. mid-redirect). */}
         <ul className="flex flex-col gap-2">
           {platforms.map((p) => {
             const meta = PLATFORM_META[p];
             const Icon = meta.icon;
+            const isDetected = Boolean(detected[p]);
             return (
               <li
                 key={p}
-                className="flex items-center gap-3 p-3 rounded-lg border border-foreground/10 bg-foreground/[0.02]"
+                className={
+                  "flex items-center gap-3 p-3 rounded-lg border transition-colors " +
+                  (isDetected
+                    ? "border-green-500/40 bg-green-500/5"
+                    : "border-foreground/10 bg-foreground/[0.02]")
+                }
               >
                 <Icon
                   className="shrink-0 text-xl"
                   style={{ color: meta.color }}
                   aria-hidden
                 />
-                <div className="flex flex-col min-w-0">
+                <div className="flex flex-col min-w-0 flex-1">
                   <span className="font-medium tracking-tight">
                     {meta.label}
                   </span>
                   <span className="text-xs text-foreground/55 leading-relaxed">
-                    Sign in (or create an account) in the tab that opens.
+                    {isDetected
+                      ? "Signed in. You can move on whenever you're ready."
+                      : "Sign in (or create an account) in the tab that opens."}
                   </span>
                 </div>
+                {/* Tick badge. Pure visual confirmation, mirrors the
+                    "signed in" copy in the row description. */}
+                {isDetected && (
+                  <span
+                    className="shrink-0 inline-flex items-center justify-center w-6 h-6 rounded-full bg-green-500 text-white text-xs"
+                    aria-label="Signed in"
+                  >
+                    <FaCheck />
+                  </span>
+                )}
               </li>
             );
           })}
@@ -539,9 +543,39 @@ function BrowserLoginStep({
                 Chromium is open. Log in to each tab, then click below
                 to save and close.
               </p>
-              <Button onClick={finishLogin} className="self-start">
-                I&apos;m done logging in →
-              </Button>
+              {/* The button stays disabled until every platform shows a
+                  tick. The wrapping span captures hover even while the
+                  underlying button is disabled (browsers swallow hover
+                  events on disabled buttons), so the tooltip surfaces. */}
+              <span
+                className="relative group inline-block self-start"
+                title={
+                  allDetected ? undefined : "Log in to all platforms"
+                }
+              >
+                <Button
+                  onClick={finishLogin}
+                  disabled={!allDetected}
+                  className={
+                    !allDetected ? "pointer-events-none opacity-60" : ""
+                  }
+                >
+                  I&apos;m done logging in →
+                </Button>
+                {!allDetected && (
+                  <span
+                    role="tooltip"
+                    className={
+                      "pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-2 " +
+                      "whitespace-nowrap rounded-md bg-foreground text-background " +
+                      "px-2 py-1 text-xs shadow opacity-0 group-hover:opacity-100 " +
+                      "transition-opacity"
+                    }
+                  >
+                    Log in to all platforms
+                  </span>
+                )}
+              </span>
             </>
           )}
 

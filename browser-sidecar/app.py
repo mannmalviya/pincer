@@ -34,6 +34,7 @@ Smoke test:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import BrowserContext, Playwright, async_playwright
 from pydantic import BaseModel
 
+from platforms import clear_stale_singleton
 from platforms.hackernews import post_to_hn
 from platforms.reddit import post_to_reddit
 
@@ -74,6 +76,73 @@ LOGIN_URLS: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
+# Per-platform login detection.
+#
+# Used by /login/status to figure out whether the user has successfully
+# signed in to each tab. Two layers per platform:
+#
+#   1. Cookie check (fast, free) — does the live BrowserContext have a
+#      non-empty auth cookie on this platform's domain? Catches the common
+#      case where the platform sets a session cookie at sign-in. No
+#      network calls, so we can poll aggressively.
+#
+#   2. URL fallback (slower) — fetch a logged-in-only endpoint with the
+#      context's APIRequestContext (shares cookies with the visible tabs)
+#      and look for a marker string in the response body. Catches platforms
+#      whose auth cookie has a different name than we expect, or whose
+#      cookies arrive in a different order than the page render.
+#
+# Discord doesn't fit either pattern — it ships its auth token only in
+# memory (no cookie, localStorage gets wiped) — so it's special-cased in
+# /login/status: we look for any open tab that has navigated past /login
+# to /channels/*, which only happens for signed-in users.
+#
+# `verify_logged_in_marker` is a substring we expect in the URL fallback
+# response when the user is logged in. Status codes alone don't work for
+# every platform (Reddit returns 200 + `{}` when logged out, for example),
+# so we sniff the body too.
+# ---------------------------------------------------------------------------
+LOGIN_DETECT: dict[str, dict[str, str]] = {
+    "reddit": {
+        "cookie_domain": ".reddit.com",
+        "cookie_name": "reddit_session",
+        "verify_url": "https://www.reddit.com/api/v1/me.json",
+        # Logged-in body contains `"name":"<username>"`. Logged-out is `{}`.
+        "verify_logged_in_marker": '"name"',
+    },
+    "hn": {
+        "cookie_domain": "news.ycombinator.com",
+        "cookie_name": "user",
+        "verify_url": "https://news.ycombinator.com/news",
+        # HN renders a `logout` link in the top bar when signed in.
+        "verify_logged_in_marker": "logout",
+    },
+    "x": {
+        "cookie_domain": ".x.com",
+        "cookie_name": "auth_token",
+        # X's verify endpoint requires a bearer token; the simplest free
+        # signal is the cookie. URL fallback is a tab-based redirect check.
+        "verify_url": "https://x.com/home",
+        "verify_logged_in_marker": "data-testid=\"primaryColumn\"",
+    },
+    "instagram": {
+        "cookie_domain": ".instagram.com",
+        "cookie_name": "sessionid",
+        "verify_url": "https://www.instagram.com/accounts/edit/",
+        # Logged-out hits redirect to /accounts/login/.
+        "verify_logged_in_marker": "Edit profile",
+    },
+    "tiktok": {
+        "cookie_domain": ".tiktok.com",
+        "cookie_name": "sessionid",
+        "verify_url": "https://www.tiktok.com/api/user/detail/?aid=1988",
+        "verify_logged_in_marker": "uniqueId",
+    },
+    # discord — see _detect_discord_login() below.
+}
+
+
+# ---------------------------------------------------------------------------
 # In-flight login session state
 #
 # Only one login session can run at a time — concurrent logins on the same
@@ -84,6 +153,15 @@ LOGIN_URLS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 _login_playwright: Playwright | None = None
 _login_ctx: BrowserContext | None = None
+
+# Serializes /post calls. Every platform handler launches its own
+# `launch_persistent_context` against the shared ./profile/ directory, and
+# Chromium's SingletonLock only permits one process per profile dir at a
+# time. Without this lock, a Publish run with N selected platforms races
+# N Chromiums and (N-1) fail with TargetClosedError. The lock turns
+# concurrent posts into a queue — the user can still trigger them in
+# parallel, the sidecar just runs them one after another.
+_post_lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +200,22 @@ class LoginStartRequest(BaseModel):
 class LoginResponse(BaseModel):
     ok: bool
     platforms: list[str] | None = None
+    error: str | None = None
+
+
+class LoginStatusRequest(BaseModel):
+    """Which platforms to detect login for. Usually the same list the
+    caller passed to /login/start."""
+
+    platforms: list[str]
+
+
+class LoginStatusResponse(BaseModel):
+    ok: bool
+    # Per-platform boolean. Missing key = unknown platform; false = checked
+    # and not detected; true = checked and detected. The dashboard treats
+    # both missing and false as "no tick yet".
+    status: dict[str, bool] | None = None
     error: str | None = None
 
 
@@ -168,36 +262,45 @@ async def post(req: PostRequest) -> PostResponse:
             error="a login session is in progress; call /login/finish first",
         )
 
-    try:
-        if req.platform == "reddit":
-            if not req.subreddit:
+    # Serialize. When the dashboard fires concurrent /post calls (e.g. a
+    # single Publish click targeting Reddit + HN), two Chromiums would
+    # otherwise race to take the SingletonLock on ./profile/ and the
+    # loser would die with TargetClosedError. The lock turns it into a
+    # FIFO queue — total latency is the same, but each post completes
+    # cleanly. Acquired here (not lower in the dispatch) so the wait is
+    # visible in logs as a single "waiting on post lock" if it ever
+    # becomes a problem.
+    async with _post_lock:
+        try:
+            if req.platform == "reddit":
+                if not req.subreddit:
+                    return PostResponse(
+                        ok=False,
+                        error="reddit posts require a 'subreddit' field",
+                    )
+                if not req.body:
+                    return PostResponse(
+                        ok=False,
+                        error="reddit posts require a 'body' field",
+                    )
+                post_url = await post_to_reddit(req.subreddit, req.title, req.body)
+            elif req.platform in ("hn", "hackernews"):
+                # HN takes a body (self-post) OR a url (link submission), never both.
+                # XOR check: exactly one must be non-None.
+                if (req.body is None) == (req.url is None):
+                    return PostResponse(
+                        ok=False,
+                        error="hn posts require exactly one of 'body' or 'url'",
+                    )
+                post_url = await post_to_hn(req.title, text=req.body, url=req.url)
+            else:
                 return PostResponse(
                     ok=False,
-                    error="reddit posts require a 'subreddit' field",
+                    error=f"unsupported platform: {req.platform!r}",
                 )
-            if not req.body:
-                return PostResponse(
-                    ok=False,
-                    error="reddit posts require a 'body' field",
-                )
-            post_url = await post_to_reddit(req.subreddit, req.title, req.body)
-        elif req.platform in ("hn", "hackernews"):
-            # HN takes a body (self-post) OR a url (link submission), never both.
-            # XOR check: exactly one must be non-None.
-            if (req.body is None) == (req.url is None):
-                return PostResponse(
-                    ok=False,
-                    error="hn posts require exactly one of 'body' or 'url'",
-                )
-            post_url = await post_to_hn(req.title, text=req.body, url=req.url)
-        else:
-            return PostResponse(
-                ok=False,
-                error=f"unsupported platform: {req.platform!r}",
-            )
-    except Exception as e:
-        log.exception("post failed")
-        return PostResponse(ok=False, error=f"{type(e).__name__}: {e}")
+        except Exception as e:
+            log.exception("post failed")
+            return PostResponse(ok=False, error=f"{type(e).__name__}: {e}")
 
     return PostResponse(ok=True, url=post_url)
 
@@ -232,6 +335,9 @@ async def login_start(req: LoginStartRequest) -> LoginResponse:
         return LoginResponse(ok=False, error=f"unknown platform(s): {unknown}")
 
     log.info("opening login session for: %s", req.platforms)
+    # Sweep stale Singleton* lock files if the previous Chromium owner is
+    # dead. See platforms/__init__.py::clear_stale_singleton for the why.
+    clear_stale_singleton(PROFILE_DIR)
     try:
         # async_playwright() is normally used as `async with` — that scopes
         # cleanup to a function. We need it to live across HTTP requests, so
@@ -309,3 +415,114 @@ async def login_finish() -> LoginResponse:
     _login_ctx = None
     _login_playwright = None
     return LoginResponse(ok=True)
+
+
+# ---------------------------------------------------------------------------
+# /login/status — per-platform login detection for the live session.
+#
+# The dashboard polls this every few seconds while Chromium is open and
+# uses the booleans to render a tick next to each platform row. When all
+# selected platforms come back true, the "I'm done logging in" button
+# unlocks. Most checks are free (cookie inspection); URL fallbacks only
+# fire when the cookie isn't present, which keeps the poll cheap.
+# ---------------------------------------------------------------------------
+@app.post("/login/status", response_model=LoginStatusResponse)
+async def login_status(req: LoginStatusRequest) -> LoginStatusResponse:
+    if _login_ctx is None:
+        return LoginStatusResponse(ok=False, error="no login session in progress")
+
+    status: dict[str, bool] = {}
+    for platform in req.platforms:
+        # Discord doesn't expose a stable cookie or API for "am I signed
+        # in?" — it ships the token in memory only. Detect by URL pattern
+        # of any open tab instead.
+        if platform == "discord":
+            status[platform] = await _detect_discord_login()
+            continue
+
+        cfg = LOGIN_DETECT.get(platform)
+        if cfg is None:
+            # Unknown platform → can't detect, treat as not-signed-in.
+            status[platform] = False
+            continue
+
+        # Cookie-first: no network calls, just a peek at the context.
+        if await _cookie_present(cfg["cookie_domain"], cfg["cookie_name"]):
+            status[platform] = True
+            continue
+
+        # URL fallback: shares cookies with the live tabs via the context's
+        # APIRequestContext. Slower than the cookie check but catches cases
+        # where the auth cookie has a slightly different name or path than
+        # our table expects.
+        status[platform] = await _verify_via_url(
+            cfg["verify_url"], cfg.get("verify_logged_in_marker")
+        )
+
+    return LoginStatusResponse(ok=True, status=status)
+
+
+async def _cookie_present(domain_suffix: str, name: str) -> bool:
+    """True if a non-empty cookie matching name + domain suffix exists
+    in the live context. Returns False on any error so the dashboard just
+    keeps polling instead of crashing on a transient hiccup."""
+    if _login_ctx is None:
+        return False
+    try:
+        cookies = await _login_ctx.cookies()
+        for c in cookies:
+            if (
+                c.get("name") == name
+                and domain_suffix in c.get("domain", "")
+                and c.get("value")
+            ):
+                return True
+        return False
+    except Exception as e:
+        log.warning("cookie check failed for %s/%s: %s", domain_suffix, name, e)
+        return False
+
+
+async def _verify_via_url(url: str, marker: str | None) -> bool:
+    """Fetch `url` through the context's request API (so cookies match the
+    user's open tabs) and decide signed-in / not-signed-in.
+
+    Decision rules:
+      - HTTP status >= 400 → not signed in.
+      - If `marker` is provided, search for it (case-insensitive) in the
+        response body — its presence means signed in.
+      - If no marker, any sub-400 status counts as signed in.
+
+    Returns False on any error so polling never breaks the UI."""
+    if _login_ctx is None:
+        return False
+    try:
+        # max_redirects=0 so we don't follow a "redirect to /login" and
+        # then read a 200 from the login page itself.
+        resp = await _login_ctx.request.get(url, max_redirects=0, timeout=5000)
+        if resp.status >= 400 or resp.status in (301, 302, 303, 307, 308):
+            return False
+        if marker is None:
+            return True
+        body = await resp.text()
+        return marker.lower() in body.lower()
+    except Exception as e:
+        log.warning("url verify failed for %s: %s", url, e)
+        return False
+
+
+async def _detect_discord_login() -> bool:
+    """Discord moves its auth token to in-memory storage to defeat token-
+    stealing extensions, so cookie/localStorage checks don't help. Use a
+    proxy signal: any open tab whose URL has moved past /login to
+    /channels/* indicates the user successfully signed in."""
+    if _login_ctx is None:
+        return False
+    try:
+        for page in _login_ctx.pages:
+            if "discord.com/channels" in page.url:
+                return True
+        return False
+    except Exception as e:
+        log.warning("discord detection failed: %s", e)
+        return False

@@ -31,6 +31,8 @@ from pathlib import Path
 
 from playwright.async_api import async_playwright
 
+from . import clear_stale_singleton
+
 
 # Profile directory lives at browser-sidecar/profile/, one level up from this
 # file. Compute the absolute path so we don't depend on CWD when uvicorn is
@@ -42,7 +44,7 @@ async def post_to_reddit(subreddit: str, title: str, body: str) -> str:
     """Submit a self-text post to /r/<subreddit> and return its permalink URL.
 
     Raises Playwright's TimeoutError if Reddit doesn't redirect us to a
-    /comments/ URL within 30s of clicking submit. That usually means a captcha,
+    success URL within 30s of clicking submit. That usually means a captcha,
     shadowban, or approval-required subreddit. Let the caller surface it.
 
     Args:
@@ -51,12 +53,19 @@ async def post_to_reddit(subreddit: str, title: str, body: str) -> str:
         body: self-text body (Reddit's hard limit is 40,000 chars).
 
     Returns:
-        Permalink URL of the created post, e.g.
-        "https://www.reddit.com/r/test/comments/1abc23/my_title/".
+        Canonical permalink of the created post, e.g.
+        "https://www.reddit.com/comments/1abc23". Reddit's /comments/<id>
+        short form redirects to the full slugged URL when followed.
     """
     # ?type=TEXT preselects the text-post mode so we skip the link/text tab
     # toggle and land directly on the right form fields.
     submit_url = f"https://www.reddit.com/r/{subreddit}/submit/?type=TEXT"
+
+    # Sweep stale Singleton* lock files if the previous Chromium owner is
+    # dead. Without this, launch_persistent_context tries to forward to a
+    # nonexistent "existing browser session" and immediately fails with
+    # TargetClosedError.
+    clear_stale_singleton(PROFILE_DIR)
 
     async with async_playwright() as p:
         # launch_persistent_context() is the Playwright equivalent of
@@ -112,17 +121,33 @@ async def post_to_reddit(subreddit: str, title: str, body: str) -> str:
             await title_field.fill(title)
             await body_field.fill(body)
 
-            # Click submit AND wait for the resulting redirect in one atomic
-            # operation. expect_navigation() registers the listener BEFORE the
-            # click so we never miss the navigation due to a race. The URL
-            # regex /comments/ matches Reddit's success redirect; any other
-            # destination (errors, captcha) won't match and we time out cleanly.
-            async with page.expect_navigation(
-                url=re.compile(r"/comments/"),
+            # Click submit, then wait for the success URL. Reddit's new
+            # composer fires TWO redirects after a successful post:
+            #   1. /r/<sub>/?created=t3_<id>&createdPostType=text&...
+            #   2. /r/<sub>/                       (query params cleared)
+            # The post ID lives in the first one's `created` param. The
+            # OLD flow used to land directly on /r/<sub>/comments/<id>/<slug>/,
+            # so we accept either shape. wait_for_url uses framenavigated
+            # events instead of bracketing a single navigation, so it
+            # tolerates the two-step redirect without racing on the load
+            # event of the second nav (which is what tripped expect_navigation).
+            await post_button.click()
+            await page.wait_for_url(
+                re.compile(r"/comments/|created=t3_"),
                 timeout=30_000,
-            ):
-                await post_button.click()
+                wait_until="domcontentloaded",
+            )
 
+            # If we caught the `?created=t3_<id>` form, lift the post ID
+            # and return the canonical short permalink. Reddit's
+            # /comments/<id> URL 301-redirects to the full slugged form
+            # when opened in a browser, so the dashboard's "View post"
+            # link still lands where the user expects.
+            match = re.search(r"[?&]created=t3_([a-z0-9]+)", page.url)
+            if match:
+                return f"https://www.reddit.com/comments/{match.group(1)}"
+
+            # Old-style /comments/<id>/<slug>/ landing — already a permalink.
             return page.url
         finally:
             # Close cleanly so Chromium flushes any updated cookies (e.g. a

@@ -22,7 +22,23 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from playwright.async_api import async_playwright
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError, async_playwright
+
+from . import clear_stale_singleton
+
+
+# Substrings HN renders on its various "we won't let you post right now"
+# pages. Matching is case-insensitive so we don't have to chase exact
+# capitalization between page variants. Conservative list: anything that
+# clearly identifies the response as a rate-limit / throttle, not as a
+# generic landing page.
+HN_RATE_LIMIT_MARKERS = (
+    "posting too fast",
+    "submitting too fast",
+    "please slow down",
+    "you're posting too fast",
+    "you're submitting too fast",
+)
 
 
 # Profile directory lives at browser-sidecar/profile/, one level up from this
@@ -56,6 +72,10 @@ async def post_to_hn(
     """
     if (text is None) == (url is None):
         raise ValueError("Provide exactly one of `text` or `url`")
+
+    # Sweep stale Singleton* lock files if the previous Chromium owner is
+    # dead. See platforms/__init__.py::clear_stale_singleton for the why.
+    clear_stale_singleton(PROFILE_DIR)
 
     async with async_playwright() as p:
         # Stealth knobs identical to platforms/reddit.py — the sidecar
@@ -93,13 +113,34 @@ async def post_to_hn(
 
             # Successful submit redirects to /newest (sometimes /front, or
             # straight to /item?id=...). The permissive regex catches all
-            # success landings; a failed submit stays on /submit and this
-            # wait times out.
-            async with page.expect_navigation(
-                url=re.compile(r"news\.ycombinator\.com/(newest|front|news|item)"),
-                timeout=30_000,
-            ):
-                await page.click("input[type='submit']")
+            # success landings; a failed submit stays on /submit (or a
+            # rate-limit page) and this wait times out — we then sniff
+            # the current page body for known throttle markers so the
+            # caller gets a clean message instead of "navigation timeout".
+            try:
+                async with page.expect_navigation(
+                    url=re.compile(
+                        r"news\.ycombinator\.com/(newest|front|news|item)"
+                    ),
+                    timeout=30_000,
+                ):
+                    await page.click("input[type='submit']")
+            except PlaywrightTimeoutError:
+                body_text = (await page.text_content("body") or "").lower()
+                if any(m in body_text for m in HN_RATE_LIMIT_MARKERS):
+                    raise RuntimeError(
+                        "HN rate-limited the submission. Wait a few minutes "
+                        "before posting again."
+                    )
+                if "validation required" in body_text:
+                    raise RuntimeError(
+                        "HN is asking for captcha/validation. Open "
+                        "news.ycombinator.com and submit one post manually "
+                        "to clear the challenge."
+                    )
+                # Unknown failure — surface the original timeout so we can
+                # debug from the call log instead of swallowing it.
+                raise
 
             # Best case: HN sent us directly to the item page.
             m = re.search(r"item\?id=(\d+)", page.url)
