@@ -326,7 +326,7 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
             },
           ],
           temperature: 0.3,
-          max_tokens: 800,
+          max_tokens: 16000,
         });
       } catch (err) {
         if (err instanceof NimError) {
@@ -339,6 +339,11 @@ export function registerOnboardingRoutes(app: FastifyInstance): void {
 
       const parsed = parseAnalyzeResponse(modelText);
       if (parsed === null) {
+        log.warn("analyze: model output unparseable", {
+          chars: modelText.length,
+          head: modelText.slice(0, 400),
+          tail: modelText.slice(-400),
+        });
         return reply.code(502).send({
           error: {
             code: "model_output_malformed",
