@@ -53,20 +53,21 @@ export const CORS_ORIGIN_REGEX =
 export const NIM_BASE_URL =
   process.env.NIM_BASE_URL ?? "https://integrate.api.nvidia.com/v1";
 export const NIM_API_KEY = process.env.NIM_API_KEY ?? "";
-// Nemotron Super 49B v1 on NIM. The 120B-class model isn't currently
-// exposed on integrate.api.nvidia.com; this is the strongest reply-quality
-// model we can call without self-hosting.
+// Nemotron 3 Super 120B-A12B on NIM. Headline model for reply drafting
+// and onboarding repo analysis. Override via env when a stronger or
+// cheaper variant becomes available.
 export const NIM_REPLY_MODEL =
-  process.env.NIM_REPLY_MODEL ?? "nvidia/llama-3.3-nemotron-super-49b-v1";
+  process.env.NIM_REPLY_MODEL ?? "NVIDIA-Nemotron-3-Super-120B-A12B";
 
 // LLM-orchestrator routing: before every "real" call, a cheap orchestrator
 // model decides whether the task warrants the primary (strong, expensive)
-// or fast (cheap, faster) model. Defaults below mean the orchestrator is
-// effectively a no-op until the user configures at least two distinct
-// models — same model for all three roles short-circuits the extra call.
+// or fast (cheap, faster) model. Defaults below pair the Super 120B as
+// primary with the Nano 30B as fast + orchestrator. When the user wants
+// to disable routing (single model everywhere), they set all three to the
+// same value and the orchestrator short-circuits (zero overhead).
 export const NIM_PRIMARY_MODEL =
   process.env.NIM_PRIMARY_MODEL ?? NIM_REPLY_MODEL;
 export const NIM_FAST_MODEL =
-  process.env.NIM_FAST_MODEL ?? NIM_REPLY_MODEL;
+  process.env.NIM_FAST_MODEL ?? "nemotron-3-nano-30b-a3b";
 export const NIM_ORCHESTRATOR_MODEL =
   process.env.NIM_ORCHESTRATOR_MODEL ?? NIM_FAST_MODEL;
