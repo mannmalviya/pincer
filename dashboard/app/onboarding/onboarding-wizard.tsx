@@ -189,11 +189,18 @@ export function OnboardingWizard() {
       )}
 
       {currentStep === "backfill" && (
-        <BackfillStep value={backfillUrls} onChange={setBackfillUrls} />
+        <BackfillStep
+          value={backfillUrls}
+          onChange={setBackfillUrls}
+          selected={selected}
+        />
       )}
 
       {/* Footer nav — Cancel on first step, Back otherwise; Next/Finish on the right. */}
-      <div className="flex justify-between">
+      {/* The Skip middle button only appears on the project step so users who
+          don't want to share a repo can jump straight to platform select.
+          Reply drafts without project context fall back to ungrounded prompts. */}
+      <div className="flex justify-between items-center">
         {stepIndex === 0 ? (
           <Link href="/" className={buttonVariants({ variant: "ghost" })}>
             Cancel
@@ -204,6 +211,18 @@ export function OnboardingWizard() {
             onClick={() => setStepIndex((s) => s - 1)}
           >
             ← Back
+          </Button>
+        )}
+
+        {currentStep === "project" && (
+          <Button
+            variant="ghost"
+            onClick={() => {
+              setProjectDone(true);
+              setStepIndex((s) => s + 1);
+            }}
+          >
+            Skip for now
           </Button>
         )}
 
@@ -695,22 +714,112 @@ function BrowserLoginStep({
 // ---------------------------------------------------------------------------
 // Step 2 (optional) — backfill existing posts.
 //
-// User pastes one URL per line (Reddit or HN). On Finish the wizard fans out
-// one POST /posts per URL with source:"backfill". The agent parses, seeds an
-// initial snapshot + comments, and the watch loop picks them up from there.
-// Skipping is fine; leave the textarea empty and click Finish.
+// Two paths to populate the watch list:
+//   1. Per-platform username: type your Reddit / HN / Bluesky handle and hit
+//      "Pull all my posts". The wizard calls /backfill-user inline so the
+//      user gets immediate confirmation (X added, Y already tracked). Only
+//      shows username fields for platforms that the user actually selected
+//      back in the platforms step AND that the agent knows how to enumerate.
+//   2. URL paste: dump specific links into the textarea. On Finish the
+//      wizard fans out one POST /posts per URL with source:"backfill".
+//
+// Skipping both is fine: leave everything empty and click Finish.
 // ---------------------------------------------------------------------------
+
+// Platforms whose APIs the agent's /backfill-user route knows how to query.
+// Kept inline (rather than imported from lib/platforms) because nothing else
+// in the dashboard needs this set yet, and it has to match the agent's enum.
+const BACKFILLABLE: ReadonlySet<Platform> = new Set<Platform>([
+  "reddit",
+  "hn",
+  "bluesky",
+]);
+
+// Per-platform UI label for the username field. Bluesky uses full handles
+// (alice.bsky.social), Reddit and HN use plain usernames.
+const USERNAME_LABEL: Partial<Record<Platform, { label: string; placeholder: string }>> = {
+  reddit: { label: "Reddit username", placeholder: "spez" },
+  hn: { label: "Hacker News username", placeholder: "pg" },
+  bluesky: { label: "Bluesky handle", placeholder: "alice.bsky.social" },
+};
+
+type UserPullSummary = {
+  platform: Platform;
+  username: string;
+  found: number;
+  added: number;
+  duplicates: number;
+  errors: Array<{ url: string; message: string }>;
+};
+
 function BackfillStep({
   value,
   onChange,
+  selected,
 }: {
   value: string;
   onChange: (next: string) => void;
+  selected: Platform[];
 }) {
+  // Filter to selected platforms the agent can actually enumerate. If the
+  // user only picked Discord + TikTok, this list is empty and the username
+  // section hides itself; the URL paste box is still available.
+  const pullablePlatforms = selected.filter((p) => BACKFILLABLE.has(p));
+
+  // Username state, keyed by platform. We keep all platforms in the same
+  // record (even non-pullable ones) so the user can toggle their selection
+  // mid-onboarding without losing typed text. Only pullablePlatforms render
+  // inputs and read from this map.
+  const [usernames, setUsernames] = useState<Partial<Record<Platform, string>>>({});
+  const [userSubmitting, setUserSubmitting] = useState(false);
+  const [userSummaries, setUserSummaries] = useState<UserPullSummary[]>([]);
+  const [userError, setUserError] = useState<string | null>(null);
+
   const count = value
     .split(/\s+/)
     .map((u) => u.trim())
     .filter((u) => u.length > 0).length;
+
+  // Targets are platforms with a non-empty username field. We only call
+  // /backfill-user for these; an empty input means "skip this platform".
+  const targets: Array<{ platform: Platform; username: string }> = pullablePlatforms
+    .map((p) => ({ platform: p, username: (usernames[p] ?? "").trim() }))
+    .filter((t) => t.username.length > 0);
+
+  async function handlePullAll() {
+    setUserSubmitting(true);
+    setUserError(null);
+    setUserSummaries([]);
+
+    const summaries: UserPullSummary[] = [];
+    // Sequential rather than Promise.all so the agent's outbound fetches
+    // to each platform don't all race at once. There are at most three
+    // targets, so the added latency is negligible.
+    for (const t of targets) {
+      try {
+        const res = await fetch(`${AGENT_BASE}/backfill-user`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...t, watch: true }),
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as {
+            error?: { message?: string };
+          };
+          setUserError(
+            `${t.platform}/${t.username}: ${body.error?.message ?? `HTTP ${res.status}`}`,
+          );
+          continue;
+        }
+        const summary = (await res.json()) as UserPullSummary;
+        summaries.push(summary);
+        setUserSummaries([...summaries]);
+      } catch (err) {
+        setUserError(err instanceof Error ? err.message : String(err));
+      }
+    }
+    setUserSubmitting(false);
+  }
 
   return (
     <Card>
@@ -719,28 +828,107 @@ function BackfillStep({
           Watch your old posts?
         </CardTitle>
         <CardDescription>
-          Paste links to any existing Reddit or Hacker News posts you want
-          Pincer to track. One URL per line. Optional, you can skip this and
-          add posts later.
+          Pull every existing post from your handles in one click, or paste
+          specific URLs below. Optional, you can skip this and add posts
+          later from the dashboard.
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <textarea
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          rows={6}
-          spellCheck={false}
-          placeholder={
-            "https://www.reddit.com/r/SideProject/comments/abc123/...\n" +
-            "https://news.ycombinator.com/item?id=12345678"
-          }
-          className="w-full rounded-lg border border-foreground/15 bg-background px-3 py-2 font-mono text-sm leading-relaxed resize-y focus:outline-none focus:border-foreground/40"
-        />
-        <p className="text-xs text-foreground/55 font-mono">
-          {count === 0
-            ? "No URLs yet. Click Finish to skip."
-            : `${count} URL${count === 1 ? "" : "s"} ready to backfill.`}
-        </p>
+      <CardContent className="flex flex-col gap-6">
+        {/* Username pull-all flow. Hidden when no selected platform supports
+            it, since rendering an empty section just adds noise. */}
+        {pullablePlatforms.length > 0 && (
+          <div className="flex flex-col gap-3">
+            <p className="text-xs uppercase tracking-wider text-foreground/55 font-mono">
+              By username
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {pullablePlatforms.map((p) => {
+                const meta = USERNAME_LABEL[p];
+                if (!meta) return null;
+                return (
+                  <label key={p} className="flex flex-col gap-1">
+                    <span className="text-xs text-foreground/65">
+                      {meta.label}
+                    </span>
+                    <input
+                      type="text"
+                      value={usernames[p] ?? ""}
+                      onChange={(e) =>
+                        setUsernames((cur) => ({ ...cur, [p]: e.target.value }))
+                      }
+                      spellCheck={false}
+                      placeholder={meta.placeholder}
+                      disabled={userSubmitting}
+                      className="rounded-lg border border-foreground/15 bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:border-foreground/40 disabled:opacity-60"
+                    />
+                  </label>
+                );
+              })}
+            </div>
+            <div className="flex items-center justify-end">
+              <Button
+                onClick={handlePullAll}
+                disabled={userSubmitting || targets.length === 0}
+              >
+                {userSubmitting ? "Pulling posts..." : "Pull all my posts"}
+              </Button>
+            </div>
+
+            {userSummaries.length > 0 && (
+              <ul className="flex flex-col gap-1 text-xs font-mono">
+                {userSummaries.map((s) => (
+                  <li
+                    key={`${s.platform}-${s.username}`}
+                    className="p-2 rounded border border-green-500/30 bg-green-500/5"
+                  >
+                    <span className="uppercase tracking-wider text-[10px]">
+                      {s.platform}
+                    </span>{" "}
+                    <span className="text-foreground/70">{s.username}:</span>{" "}
+                    <span>
+                      {s.added} added, {s.duplicates} already tracked
+                      {s.errors.length > 0 ? `, ${s.errors.length} errors` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {userError && (
+              <p className="text-xs text-red-700 dark:text-red-400 font-mono">
+                {userError}
+              </p>
+            )}
+          </div>
+        )}
+
+        {pullablePlatforms.length > 0 && (
+          <div className="h-px bg-foreground/10" aria-hidden />
+        )}
+
+        {/* URL paste fallback. Always available, applies to any URL the agent
+            can parse (reddit/hn/bluesky regardless of selection). */}
+        <div className="flex flex-col gap-3">
+          <p className="text-xs uppercase tracking-wider text-foreground/55 font-mono">
+            By URL
+          </p>
+          <textarea
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            rows={6}
+            spellCheck={false}
+            placeholder={
+              "https://www.reddit.com/r/SideProject/comments/abc123/...\n" +
+              "https://news.ycombinator.com/item?id=12345678\n" +
+              "https://bsky.app/profile/alice.bsky.social/post/abc123"
+            }
+            className="w-full rounded-lg border border-foreground/15 bg-background px-3 py-2 font-mono text-sm leading-relaxed resize-y focus:outline-none focus:border-foreground/40"
+          />
+          <p className="text-xs text-foreground/55 font-mono">
+            {count === 0
+              ? "No URLs yet. Click Finish to skip."
+              : `${count} URL${count === 1 ? "" : "s"} ready to backfill.`}
+          </p>
+        </div>
       </CardContent>
     </Card>
   );

@@ -24,7 +24,7 @@ type Result = {
 };
 
 type UserSummary = {
-  platform: "reddit" | "hn";
+  platform: "reddit" | "hn" | "bluesky";
   username: string;
   found: number;
   added: number;
@@ -37,10 +37,12 @@ export function BackfillCard() {
   const [submitting, setSubmitting] = useState(false);
   const [results, setResults] = useState<Result[]>([]);
 
-  // User-mode state. Two separate username fields because Reddit and HN
-  // usernames have no overlap and most users have distinct handles.
+  // User-mode state. Three separate username fields because Reddit, HN,
+  // and Bluesky handles have no overlap and most users have distinct
+  // handles per platform.
   const [redditUser, setRedditUser] = useState("");
   const [hnUser, setHnUser] = useState("");
+  const [blueskyUser, setBlueskyUser] = useState("");
   const [userSubmitting, setUserSubmitting] = useState(false);
   const [userSummaries, setUserSummaries] = useState<UserSummary[]>([]);
   const [userError, setUserError] = useState<string | null>(null);
@@ -55,11 +57,16 @@ export function BackfillCard() {
     setUserSubmitting(true);
     setUserError(null);
     setUserSummaries([]);
-    const targets: Array<{ platform: "reddit" | "hn"; username: string }> = [];
+    const targets: Array<{
+      platform: "reddit" | "hn" | "bluesky";
+      username: string;
+    }> = [];
     if (redditUser.trim().length > 0)
       targets.push({ platform: "reddit", username: redditUser.trim() });
     if (hnUser.trim().length > 0)
       targets.push({ platform: "hn", username: hnUser.trim() });
+    if (blueskyUser.trim().length > 0)
+      targets.push({ platform: "bluesky", username: blueskyUser.trim() });
 
     const summaries: UserSummary[] = [];
     for (const t of targets) {
@@ -146,8 +153,9 @@ export function BackfillCard() {
           Backfill existing posts
         </CardTitle>
         <CardDescription>
-          Add existing Reddit or Hacker News posts to the watch list. Use
-          your username to pull every post at once, or paste specific URLs.
+          Add existing Reddit, Hacker News, or Bluesky posts to the watch
+          list. Use your username to pull every post at once, or paste
+          specific URLs.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-6">
@@ -188,7 +196,7 @@ export function BackfillCard() {
           <p className="text-xs uppercase tracking-wider text-foreground/55 font-mono">
             By username
           </p>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             <label className="flex flex-col gap-1">
               <span className="text-xs text-foreground/65">Reddit username</span>
               <input
@@ -213,13 +221,27 @@ export function BackfillCard() {
                 className="rounded-lg border border-foreground/15 bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:border-foreground/40 disabled:opacity-60"
               />
             </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-foreground/65">Bluesky handle</span>
+              <input
+                type="text"
+                value={blueskyUser}
+                onChange={(e) => setBlueskyUser(e.target.value)}
+                spellCheck={false}
+                placeholder="alice.bsky.social"
+                disabled={userSubmitting}
+                className="rounded-lg border border-foreground/15 bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:border-foreground/40 disabled:opacity-60"
+              />
+            </label>
           </div>
           <div className="flex items-center justify-end">
             <Button
               onClick={handleUserSubmit}
               disabled={
                 userSubmitting ||
-                (redditUser.trim().length === 0 && hnUser.trim().length === 0)
+                (redditUser.trim().length === 0 &&
+                  hnUser.trim().length === 0 &&
+                  blueskyUser.trim().length === 0)
               }
             >
               {userSubmitting ? "Pulling posts..." : "Pull all my posts"}
@@ -265,7 +287,8 @@ export function BackfillCard() {
           spellCheck={false}
           placeholder={
             "https://www.reddit.com/r/SideProject/comments/abc123/...\n" +
-            "https://news.ycombinator.com/item?id=12345678"
+            "https://news.ycombinator.com/item?id=12345678\n" +
+            "https://bsky.app/profile/alice.bsky.social/post/abc123"
           }
           disabled={submitting}
           className="w-full rounded-lg border border-foreground/15 bg-background px-3 py-2 font-mono text-sm leading-relaxed resize-y focus:outline-none focus:border-foreground/40 disabled:opacity-60"

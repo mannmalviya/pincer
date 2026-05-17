@@ -101,14 +101,6 @@ export default function Landing() {
         <p className="text-foreground/70 mt-3">
           Onboarding takes about two minutes.
         </p>
-        <div className="flex gap-3 justify-center mt-8">
-          <Link
-            href="/onboarding"
-            className="shine rounded-full bg-foreground text-background px-6 h-12 flex items-center font-medium hover:opacity-90"
-          >
-            Get started →
-          </Link>
-        </div>
       </section>
 
       {/* Footer */}

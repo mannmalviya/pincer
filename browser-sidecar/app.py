@@ -337,11 +337,43 @@ async def login_start(req: LoginStartRequest) -> LoginResponse:
     """
     global _login_playwright, _login_ctx
 
+    # If we still have a context handle, the previous session may have
+    # ended without /login/finish being called (user closed Chromium
+    # manually, dashboard navigated away mid-flow, uvicorn kept module
+    # state across a reload). Probe the context; if it's dead, clean it
+    # up and continue rather than wedging the sidecar behind a stale
+    # global. Only refuse when a context still has live pages, which
+    # means a real session is genuinely in flight.
     if _login_ctx is not None:
-        return LoginResponse(
-            ok=False,
-            error="a login session is already in progress; call /login/finish first",
-        )
+        stale = False
+        try:
+            # `.pages` is a sync property that raises on a closed context.
+            # An empty list also counts as stale (no tabs left = browser
+            # was closed by the user).
+            if not _login_ctx.pages:
+                stale = True
+        except Exception:
+            stale = True
+
+        if not stale:
+            return LoginResponse(
+                ok=False,
+                error="a login session is already in progress; call /login/finish first",
+            )
+
+        # Stale: tear it down silently and fall through to a fresh start.
+        log.info("clearing stale login session before /login/start")
+        try:
+            await _login_ctx.close()
+        except Exception as e:
+            log.warning("error closing stale login context: %s", e)
+        try:
+            if _login_playwright is not None:
+                await _login_playwright.stop()
+        except Exception as e:
+            log.warning("error stopping stale playwright: %s", e)
+        _login_ctx = None
+        _login_playwright = None
 
     # Validate everything up front so we don't launch Chromium for an
     # unrecoverable request.
